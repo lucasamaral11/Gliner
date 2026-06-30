@@ -26,12 +26,12 @@ async def chamar_ollama(texto: str):
     )
 
     # RECONEXÃO: Substitua 'SEU_CONTAINER_OLLAMA_AQUI' pelo nome do seu serviço Ollama existente
-    ollama_host = "SEU_CONTAINER_OLLAMA_AQUI" 
+    ollama_host = "http://187.127.36.194:11434/api/chat" 
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(
-                f"http://{ollama_host}:11434/api/generate",
+                f"http://187.127.36.194:11434/api/chat",
                 json={
                     "model": "qwen2.5-coder:0.5b",
                     "prompt": f"{prompt_sistema}\n\nTexto da oferta:\n{texto}",
