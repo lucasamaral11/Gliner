@@ -7,6 +7,10 @@ import re
 
 app = FastAPI(title="Qwen Connected API")
 
+# URL oficial que você já usa para fazer as chamadas
+OLLAMA_URL = "http://187.127.36.194:11434/api/chat"
+MODEL_NAME = "qwen2.5-coder:0.5b"
+
 class TextoPayload(BaseModel):
     texto: str
 
@@ -25,26 +29,38 @@ async def chamar_ollama(texto: str):
         "2. Responda APENAS o JSON puro. Não use blocos de código ```json ou explicações."
     )
 
-    # RECONEXÃO: Substitua 'SEU_CONTAINER_OLLAMA_AQUI' pelo nome do seu serviço Ollama existente
-    ollama_host = "http://187.127.36.194:11434/api/chat" 
-
+    # Monta a estrutura correta para o endpoint /api/chat
+    payload_dados = {
+        "model": MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": prompt_sistema},
+            {"role": "user", "content": f"Texto da oferta:\n{texto}"}
+        ],
+        "stream": False,
+        "format": "json" # Força o Ollama a estruturar a saída em JSON válido
+    }
+    
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            response = await client.post(
-                f"http://187.127.36.194:11434/api/chat",
-                json={
-                    "model": "qwen2.5-coder:0.5b",
-                    "prompt": f"{prompt_sistema}\n\nTexto da oferta:\n{texto}",
-                    "stream": False,
-                    "format": "json"
-                }
-            )
+            # Envia a requisição direto para o IP informado
+            response = await client.post(OLLAMA_URL, json=payload_dados)
+            
+            if response.status_code != 200:
+                raise Exception(f"Ollame retornou status {response.status_code}: {response.text}")
+                
             dados = response.json()
-            resposta_ia = dados.get("response", "").strip()
+            
+            # No endpoint /api/chat, a resposta da IA fica dentro de ['message']['content']
+            resposta_ia = dados.get("message", {}).get("content", "").strip()
+            
+            # Remove marcações de código markdown por segurança
             resposta_limpa = re.sub(r"```json\s*|```", "", resposta_ia).strip()
             return json.loads(resposta_limpa)
+            
+        except json.JSONDecodeError:
+            raise Exception(f"A IA não retornou um JSON válido. Resposta bruta: {resposta_ia}")
         except Exception as e:
-            raise Exception(f"Erro ao conectar no Ollama compartilhado: {str(e)}")
+            raise Exception(f"Falha na comunicação com o Ollama no IP informado: {str(e)}")
 
 @app.post("/extrair-oferta")
 async def extrair_oferta(payload: TextoPayload):
