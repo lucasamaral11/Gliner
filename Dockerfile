@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Instala curl e dependências básicas
+# Instala curl e dependências básicas do sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -11,12 +11,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Instala o Ollama oficial dentro do container
 RUN curl -fsSL https://ollama.com | sh
 
-# Instala bibliotecas leves do Python
+# Instala bibliotecas Python necessárias
 RUN pip install --no-cache-dir fastapi uvicorn httpx uvloop httptools
 
+# Copia os arquivos do projeto
 COPY main.py .
+COPY entrypoint.sh .
+
+# Dá permissão de execução para o script de inicialização
+RUN chmod +x entrypoint.sh
 
 EXPOSE 8800
 
-# Inicializa o Ollama em segundo plano, baixa o Qwen de 350MB comprimido e liga a API FastAPI na porta 8800 com 1 único worker estável
-CMD ["sh", "-c", "ollama serve & sleep 5 && ollama run qwen2.5-coder:0.5b 'oi' && uvicorn main:app --host 0.0.0.0 --port 8800 --workers 1 --loop uvloop --http httptools"]
+# Executa o script que gerencia os dois serviços juntos de forma limpa
+CMD ["./entrypoint.sh"]
