@@ -7,7 +7,6 @@ import uvicorn
 
 app = FastAPI(title="GLiNER High-Concurrency API")
 
-# Inicializa a variável do modelo global vazia
 model = None
 executor = ThreadPoolExecutor(max_workers=2) 
 
@@ -16,10 +15,10 @@ class TextoPayload(BaseModel):
 
 def processar_gliner(texto: str):
     global model
-    # Carrega o modelo na primeira requisição se ainda não estiver na memória
     if model is None:
-        print("Carregando modelo GLiNER pela primeira vez...")
-        model = GLiNER.from_pretrained("urchinsec/gliner_medium-v2.1")
+        print("Carregando modelo GLiNER original pela primeira vez...")
+        # Linha corrigida com o caminho oficial do Hugging Face
+        model = GLiNER.from_pretrained("urchade/gliner_medium-v2.1")
         print("Modelo carregado com sucesso!")
         
     labels = ["nome do produto", "preço anterior", "preço atual", "cupom", "link do produto"]
@@ -58,5 +57,4 @@ async def extrair_oferta(payload: TextoPayload):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    # Fallback caso rode localmente fora do Docker
     uvicorn.run("main:app", host="0.0.0.0", port=8800)
