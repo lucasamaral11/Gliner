@@ -2,12 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Instala dependências do sistema necessárias para compilar pacotes Python de IA
+# Instala dependências essenciais do sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Instala as bibliotecas necessárias direto no container
+# Instala pacotes Python essenciais
 RUN pip install --no-cache-dir \
     fastapi \
     uvicorn \
@@ -16,11 +16,11 @@ RUN pip install --no-cache-dir \
     uvloop \
     httptools
 
-# Copia o código da API para dentro do container
+# Copia o script para dentro do container
 COPY main.py .
 
-# Expõe a porta que configuramos no uvicorn
+# Expõe a nova porta configurada
 EXPOSE 8800
 
-# Comando para iniciar a aplicação
-CMD ["python", "main.py"]
+# Executa o uvicorn apontando para a porta 8800
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8800", "--workers", "4", "--loop", "uvloop", "--http", "httptools"]
