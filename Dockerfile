@@ -2,22 +2,21 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Instala curl e dependências básicas
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+    curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Instala pacotes necessários para rodar o Qwen
-RUN pip install --no-cache-dir \
-    fastapi \
-    uvicorn \
-    transformers \
-    torch \
-    accelerate \
-    uvloop \
-    httptools
+# Instala o Ollama oficial dentro do container
+RUN curl -fsSL https://ollama.com | sh
+
+# Instala bibliotecas leves do Python
+RUN pip install --no-cache-dir fastapi uvicorn httpx uvloop httptools
 
 COPY main.py .
 
 EXPOSE 8800
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8800", "--workers", "4", "--loop", "uvloop", "--http", "httptools"]
+# Inicializa o Ollama em segundo plano, baixa o Qwen de 350MB comprimido e liga a API FastAPI na porta 8800 com 1 único worker estável
+CMD ["sh", "-c", "ollama serve & sleep 5 && ollama run qwen2.5-coder:0.5b 'oi' && uvicorn main:app --host 0.0.0.0 --port 8800 --workers 1 --loop uvloop --http httptools"]
