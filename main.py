@@ -1,13 +1,11 @@
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import httpx
 import json
 import re
 
-app = FastAPI(title="Qwen Ollama Ultra-Fast API")
-executor = ThreadPoolExecutor(max_workers=1)
+app = FastAPI(title="Qwen Connected API")
 
 class TextoPayload(BaseModel):
     texto: str
@@ -27,27 +25,26 @@ async def chamar_ollama(texto: str):
         "2. Responda APENAS o JSON puro. Não use blocos de código ```json ou explicações."
     )
 
-    # Conecta no serviço do Ollama que estará rodando no mesmo container
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            "http://127.0.0",
-            json={
-                "model": "qwen2.5-coder:0.5b",
-                "prompt": f"{prompt_sistema}\n\nTexto da oferta:\n{texto}",
-                "stream": False,
-                "format": "json" # Força o Ollama a travar a saída em JSON perfeito
-            }
-        )
-        
-        if response.status_code != 200:
-            raise Exception("Erro ao chamar o Ollama interno")
-            
-        dados = response.json()
-        resposta_ia = dados.get("response", "").strip()
-        
-        # Limpeza extra por segurança
-        resposta_limpa = re.sub(r"```json\s*|```", "", resposta_ia).strip()
-        return json.loads(resposta_limpa)
+    # RECONEXÃO: Substitua 'SEU_CONTAINER_OLLAMA_AQUI' pelo nome do seu serviço Ollama existente
+    ollama_host = "SEU_CONTAINER_OLLAMA_AQUI" 
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(
+                f"http://{ollama_host}:11434/api/generate",
+                json={
+                    "model": "qwen2.5-coder:0.5b",
+                    "prompt": f"{prompt_sistema}\n\nTexto da oferta:\n{texto}",
+                    "stream": False,
+                    "format": "json"
+                }
+            )
+            dados = response.json()
+            resposta_ia = dados.get("response", "").strip()
+            resposta_limpa = re.sub(r"```json\s*|```", "", resposta_ia).strip()
+            return json.loads(resposta_limpa)
+        except Exception as e:
+            raise Exception(f"Erro ao conectar no Ollama compartilhado: {str(e)}")
 
 @app.post("/extrair-oferta")
 async def extrair_oferta(payload: TextoPayload):
@@ -56,7 +53,3 @@ async def extrair_oferta(payload: TextoPayload):
         return resultado
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8800)
