@@ -5,18 +5,63 @@ import httpx
 import json
 import re
 
-app = FastAPI(title="Qwen Connected API")
+app = FastAPI(title="Qwen Robust Extractor API")
 
-# Mantém a URL oficial do seu Ollama externo
 OLLAMA_URL = "http://187.127.36.194:11434/api/chat"
-MODEL_NAME = "qwen2.5-coder:0.5b"
+# UPGRADE: Mudamos para a versão de 1.5B que é muito mais obediente e estável
+MODEL_NAME = "qwen2.5-coder:1.5b" 
 
 class TextoPayload(BaseModel):
     texto: str
 
+def tratar_regras_negocio(dados_json, texto_bruto):
+    """
+    Blinda o JSON contra falhas e esquecimentos da IA usando programação estrita
+    """
+    # 1. Tratamento e padronização dos Preços
+    p_atual = str(dados_json.get("preco_atual", "") or "").strip()
+    p_anterior = str(dados_json.get("preco_anterior", "") or "").strip()
+    
+    # Remove textos extras se a IA tiver colocado além do número
+    p_atual_num = "".join(re.findall(r'\d+', p_atual))
+    p_anterior_num = "".join(re.findall(r'\d+', p_anterior))
+    
+    if p_atual_num:
+        dados_json["preco_atual"] = f"R$ {p_atual_num}"
+    
+    # Regra estrita: Preço anterior não pode ser igual ao atual ou menor
+    if p_anterior_num and p_anterior_num != p_atual_num and int(p_anterior_num) > int(p_atual_num):
+        dados_json["preco_anterior"] = f"R$ {p_anterior_num}"
+    else:
+        dados_json["preco_anterior"] = None
+
+    # 2. Correção de Links usando varredura Regex direta no texto bruto
+    links_no_texto = re.findall(r'(https?://\S+)', texto_bruto)
+    
+    # Filtra links de convite ou canais secundários
+    links_validos = [l for l in links_no_texto if "t.me" not in l and "whatsapp" not in l and "achados" not in l]
+    
+    if links_validos:
+        # Tenta identificar se o primeiro link está associado a cupom no texto bruto
+        primeiro_link = links_validos[0]
+        pos_link = texto_bruto.find(primeiro_link)
+        contexto_anterior = texto_bruto[max(0, pos_link-50):pos_link].lower()
+        
+        if "cupom" in contexto_anterior or "resgate" in contexto_anterior:
+            dados_json["link_cupom"] = primeiro_link
+            # Se houver um segundo link, ele será o do produto
+            if len(links_validos) > 1:
+                dados_json["link_produto"] = links_validos[1]
+        else:
+            dados_json["link_produto"] = primeiro_link
+            if dados_json.get("link_cupom") == primeiro_link:
+                dados_json["link_cupom"] = None
+
+    return dados_json
+
 async def chamar_ollama(texto: str):
     prompt_sistema = (
-        "Você é um extrator de dados de ofertas cirúrgico e preciso. Responda APENAS com um objeto JSON válido no formato exato:\n"
+        "Você é um extrator de dados de ofertas. Responda APENAS com um objeto JSON válido no formato:\n"
         "{\n"
         "  \"nome_produto\": \"string\",\n"
         "  \"preco_anterior\": \"string ou null\",\n"
@@ -24,14 +69,11 @@ async def chamar_ollama(texto: str):
         "  \"cupom\": \"string ou null\",\n"
         "  \"link_cupom\": \"string ou null\",\n"
         "  \"link_produto\": \"string\"\n"
-        "}\n\n"
-        "Regras estritas de extração:\n"
-        "1. NOME DO PRODUTO: Capture o nome COMPLETO do produto comercial com modelo e marca (ex: 'Smart TV 32” Britânia B32CRA HD Wi-Fi'). Nunca corte ou resuma o nome.\n"
-        "2. PREÇOS: Adicione sempre o prefixo 'R\$' nos preços (ex: 'R\$ 673'). Se na mensagem houver apenas UM preço solto, ele é o 'preco_atual'. O 'preco_anterior' deve ser estritamente 'null' se não houver um preço mais alto explicitamente listado antes (nunca repita o mesmo valor nos dois campos).\n"
-        "3. CUPOM: Extraia apenas o código do cupom se houver. Se o texto apenas disser para resgatar no link, deixe 'cupom' como null.\n"
-        "4. LINKS DE CUPOM: Se houver um link específico para resgatar ou coletar o cupom (ex: 'Resgate Cupom... aqui: link'), coloque este link obrigatoriamente no campo 'link_cupom'. Não o misture com o link de compra.\n"
-        "5. LINK DO PRODUTO: Identifique o link principal de compra do produto anunciado (geralmente o último ou o que está com o emoji de link) e coloque em 'link_produto'. Ignore links de redes sociais ou convites como Telegram/WhatsApp.\n"
-        "6. FORMATO: Responda APENAS o JSON puro. Não use blocos de código markdown ```json ou introduções."
+        "}\n"
+        "Regras:\n"
+        "1. Capture o nome COMPLETO do produto. Nunca o resuma.\n"
+        "2. Identifique qual link é para coletar cupom e qual é para comprar o produto.\n"
+        "3. Responda apenas o JSON puro, sem markdown."
     )
 
     payload_dados = {
@@ -48,17 +90,19 @@ async def chamar_ollama(texto: str):
         try:
             response = await client.post(OLLAMA_URL, json=payload_dados)
             if response.status_code != 200:
-                raise Exception(f"Ollame retornou status {response.status_code}: {response.text}")
+                raise Exception(f"Ollama erro: {response.text}")
                 
             dados = response.json()
             resposta_ia = dados.get("message", {}).get("content", "").strip()
             resposta_limpa = re.sub(r"```json\s*|```", "", resposta_ia).strip()
-            return json.loads(resposta_limpa)
             
-        except json.JSONDecodeError:
-            raise Exception(f"A IA não retornou um JSON válido. Resposta bruta: {resposta_ia}")
+            json_puro = json.loads(resposta_limpa)
+            
+            # Aplica a camada de programação para corrigir os esquecimentos da IA
+            return tratar_regras_negocio(json_puro, texto)
+            
         except Exception as e:
-            raise Exception(f"Falha na comunicação com o Ollama: {str(e)}")
+            raise Exception(f"Erro no processamento: {str(e)}")
 
 @app.post("/extrair-oferta")
 async def extrair_oferta(payload: TextoPayload):
