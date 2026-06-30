@@ -16,13 +16,15 @@ class TextoPayload(BaseModel):
 def processar_gliner(texto: str):
     global model
     if model is None:
-        print("Carregando modelo GLiNER original pela primeira vez...")
-        # Linha corrigida com o caminho oficial do Hugging Face
+        print("Carregando modelo GLiNER otimizado...")
         model = GLiNER.from_pretrained("urchade/gliner_medium-v2.1")
         print("Modelo carregado com sucesso!")
         
-    labels = ["nome do produto", "preço anterior", "preço atual", "cupom", "link do produto"]
-    entities = model.predict_entities(texto, labels, threshold=0.4)
+    # Rótulos simplificados e universais para o modelo entender melhor
+    labels = ["product", "old price", "new price", "coupon", "url"]
+    
+    # Reduzido o threshold para 0.25 para aumentar a sensibilidade em português
+    entities = model.predict_entities(texto, labels, threshold=0.25)
     
     json_resultado = {
         "nome_produto": None, "preco_anterior": None, 
@@ -33,15 +35,17 @@ def processar_gliner(texto: str):
         label = entity["label"]
         text = entity["text"].strip()
         
-        if label == "nome do produto":
+        if label == "product":
             json_resultado["nome_produto"] = text
-        elif label == "preço anterior":
+        elif label == "old price":
             json_resultado["preco_anterior"] = text
-        elif label == "preço atual":
+        elif label == "new price":
             json_resultado["preco_atual"] = text
-        elif label == "cupom":
-            json_resultado["cupom"] = text
-        elif label == "link do produto":
+        elif label == "coupon":
+            # Evita capturar a palavra literal "cupom" como o código do cupom
+            if text.lower() != "cupom":
+                json_resultado["cupom"] = text
+        elif label == "url":
             if "prime" not in text.lower() or json_resultado["link_produto"] is None:
                 json_resultado["link_produto"] = text
                 
