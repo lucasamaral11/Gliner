@@ -41,7 +41,7 @@ def processar_qwen(texto: str):
         "  \"cupom\": \"string ou null\",\n"
         "  \"link_produto\": \"string\"\n"
         "}\n"
-        "Não adicione textos extras, introduções ou blocos de código markdown. Responda apenas o JSON puro."
+        "Não adicione textos extras, introduções ou blocos de código markdown. Responda apenas o JSON puro. Não faça traduções"
     )
 
     mensagens = [
