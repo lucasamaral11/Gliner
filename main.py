@@ -41,7 +41,7 @@ def organizar_links_e_precos(dados_json, texto_bruto):
                 if link in linha:
                     if "cupom" in linha.lower() or "resgate" in linha.lower():
                         dados_json["link_cupom"] = link
-                    elif "compre aqui" in linha.lower() or "por r$" in inline_por if 'inline_por' in locals() else "por" in linha.lower() or "link do produto" in linha.lower():
+                    elif "compre aqui" in linha.lower() or "por" in linha.lower() or "link do produto" in linha.lower():
                         dados_json["link_produto"] = link
 
         if not dados_json["link_produto"] and links_lojas:
@@ -49,43 +49,50 @@ def organizar_links_e_precos(dados_json, texto_bruto):
         if not dados_json["link_cupom"] and len(links_lojas) > 1 and links_lojas[0] != dados_json["link_produto"]:
             dados_json["link_cupom"] = links_lojas[1]
 
-    # 2. VALIDAÇÃO HÍBRIDA DE PREÇOS (DE / POR)
+    # 2. VALIDAÇÃO HÍBRIDA DE PREÇOS (DE / POR) - Suporta formatos sem dois pontos
     if dados_json.get("preco_anterior") is None:
         linha_de = None
         linha_por = None
         for linha in texto_bruto.split('\n'):
-            if re.search(r'\bde\b\s*:?\s*r?\$?', linha, re.IGNORECASE):
+            if re.search(r'\bde\b\s*:?\s*r?\$?\s*\d+', linha, re.IGNORECASE):
                 linha_de = linha
-            if re.search(r'\b(?:por|💵)\b\s*:?\s*r?\$?', linha, re.IGNORECASE):
-                linha_por = line if 'line' in locals() else linha
+            if re.search(r'\b(?:por|💵)\b\s*:?\s*r?\$?\s*\d+', linha, re.IGNORECASE):
+                linha_por = linha
 
         if linha_de and linha_por:
             match_de = re.search(r'(\d+(?:[\.,]\d{3})*(?:[\.,]\d{2})?)', linha_de)
             match_por = re.search(r'(\d+(?:[\.,]\d{3})*(?:[\.,]\d{2})?)', linha_por)
             if match_de and match_por:
-                dados_json["preco_anterior"] = f"R$ {match_de.group(1).strip()}"
-                dados_json["preco_atual"] = f"R$ {match_por.group(1).strip()}"
+                dados_json["preco_anterior"] = match_de.group(1).strip()
+                dados_json["preco_atual"] = match_por.group(1).strip()
 
-    # 3. PADRONIZAÇÃO MONETÁRIA
+    # 3. PADRONIZAÇÃO MONETÁRIA E REMOÇÃO DE CENTAVOS ZERADOS
     for campo in ["preco_atual", "preco_anterior"]:
         valor = dados_json.get(campo)
         if valor is None or str(valor).strip().lower() in ["null", "none", ""]:
             dados_json[campo] = None
-        elif "R$" not in str(valor):
-            dados_json[campo] = f"R$ {str(valor).replace('R$', '').strip()}"
+        else:
+            # Remove sufixos .00 ou ,00 e limpa o texto
+            valor_limpo = str(valor).replace('.00', '').replace(',00', '').replace('R$', '').strip()
+            dados_json[campo] = f"R$ {valor_limpo}"
 
     if dados_json.get("preco_anterior") == dados_json.get("preco_atual"):
         dados_json["preco_anterior"] = None
 
-    # 4. LIMPEZA REAL DE CUPOM (Deleta alucinações se a palavra não estiver no texto original)
+    # 4. LIMPEZA REAL DE CUPOM (Deleta alucinações e emojis)
     cupom_ia = str(dados_json.get("cupom", "") or "").strip()
     if cupom_ia and cupom_ia.lower() != "null":
-        # Se o cupom retornado NÃO existir fisicamente dentro do texto bruto, joga fora (coloca None)
-        if cupom_ia.lower() not in texto_bruto.lower():
+        # Remove emojis de ticket que venham junto
+        cupom_limpo = cupom_ia.replace('🎟️', '').replace('🎟', '').strip()
+        
+        # Se o cupom retornado NÃO existir no texto bruto, vira None
+        if cupom_limpo.lower() not in texto_bruto.lower():
             dados_json["cupom"] = None
         # Proteção contra capturar fragmentos de links
-        elif any(cupom_ia in l for l in links_no_texto):
+        elif any(cupom_limpo in l for l in links_no_texto):
             dados_json["cupom"] = None
+        else:
+            dados_json["cupom"] = cupom_limpo
     else:
         dados_json["cupom"] = None
 
