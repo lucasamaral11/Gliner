@@ -22,66 +22,28 @@ class OfertaEstruturada(BaseModel):
     link_cupom: Optional[str] = None
     link_produto: str
 
-def ajustar_regras_telegram(dados_json, texto_bruto):
+def organizar_links_e_limpeza(dados_json, texto_bruto):
     """
-    Higienização avançada de centavos, exclusão de links institucionais e validação de preços
+    Remove links de canais/redes sociais e padroniza campos nulos reais
     """
-    # 1. Extração Inteligente de Preços direto do Texto Bruto (Evitando quebras da IA)
-    texto_sem_links = re.sub(r'https?://\S+', '', texto_bruto)
-    
-    # Captura padrões monetários comuns como: 349,86 ou 241
-    padrao_precos = re.findall(r'(?:De|Por|R\$)?\s*:?\s*R?\$\s*(\d+(?:[\.,]\d{2})?)\b', texto_sem_links, re.IGNORECASE)
-    
-    precos_formatados = []
-    for p in padrao_precos:
-        p_limpo = p.strip().replace(' ', '')
-        if p_limpo:
-            # Garante a padronização do R$ mantendo os centavos se existirem
-            precos_formatados.append(f"R$ {p_limpo}")
-
-    # Aplica a distribuição correta de preços com base na ordem de leitura do texto
-    if len(precos_formatados) >= 2:
-        dados_json["preco_anterior"] = precos_formatados[0]
-        dados_json["preco_atual"] = precos_formatados[1]
-    elif len(precos_formatados) == 1:
-        dados_json["preco_atual"] = precos_formatados[0]
-        dados_json["preco_anterior"] = None
-    else:
-        # Fallback de segurança se a regex falhar, apenas limpando o que a IA trouxe
-        p_at = dados_json.get("preco_atual", "")
-        if p_at and "R$" not in str(p_at):
-            dados_json["preco_atual"] = f"R$ {str(p_at).strip()}"
-
-    # Validação extra: se os preços forem idênticos, anula o anterior
-    if dados_json["preco_anterior"] == dados_json["preco_atual"]:
-        dados_json["preco_anterior"] = None
-
-    # 2. Filtro Cirúrgico de Links (Descarta links institucionais e foca nos de compra)
+    # 1. Filtro estrito de Links de Lojas
     links_no_texto = re.findall(r'(https?://\S+)', texto_bruto)
-    
-    # Palavras banidas que indicam links de canais, bots ou sites do dono do grupo
     termos_banidos = ["t.me", "whatsapp", "mastertechjr", "youtube", "instagram", "facebook", "linktr.ee"]
-    
     links_lojas = [l for l in links_no_texto if not any(termo in l.lower() for termo in termos_banidos)]
     
     dados_json["link_cupom"] = None
     dados_json["link_produto"] = None
 
     if links_lojas:
-        # Em grupos do AliExpress, se houver mais de um link de loja, o primeiro costuma ser o mobile/moedas
-        # Vamos salvar o link principal de compra
-        dados_json["link_produto"] = links_lojas[0]
-        
-        # Se houver um segundo link de loja (ex: link normal de PC), mantém ele ou verifica se há link de cupom
+        dados_json["link_produto"] = links_lojas[0] # Define o primeiro link válido como principal
         for link in links_lojas:
             for linha in texto_bruto.split('\n'):
                 if link in linha and ("cupom" in linha.lower() or "resgate" in linha.lower()):
                     dados_json["link_cupom"] = link
-                    # Se o link do cupom era o primeiro, joga o segundo link para o produto
                     if dados_json["link_produto"] == link and len(links_lojas) > 1:
                         dados_json["link_produto"] = links_lojas[1]
 
-    # 3. Garante que os campos nulos textuais virem Nulos reais (None)
+    # 2. Força nulo real (None) onde a IA colocou string textua "null"
     for campo in ["preco_anterior", "cupom", "link_cupom"]:
         if str(dados_json.get(campo)).strip().lower() in ["null", "none", ""]:
             dados_json[campo] = None
@@ -90,7 +52,7 @@ def ajustar_regras_telegram(dados_json, texto_bruto):
 
 async def chamar_ollama(texto: str):
     prompt_sistema = (
-        "Você é um extrator de dados de ofertas. Analise o texto e devolva APENAS um JSON no formato:\n"
+        "Você é um extrator de dados de ofertas do Telegram. Analise o texto fornecido e retorne APENAS um objeto JSON no formato exato:\n"
         "{\n"
         "  \"nome_produto\": \"string\",\n"
         "  \"preco_anterior\": \"string ou null\",\n"
@@ -98,14 +60,45 @@ async def chamar_ollama(texto: str):
         "  \"cupom\": \"string ou null\",\n"
         "  \"link_cupom\": \"string ou null\",\n"
         "  \"link_produto\": \"string\"\n"
-        "}\n"
-        "Regra: Capture o nome completo do produto com marca e modelo. Não confunda links de canais com links de compra."
+        "}\n\n"
+        "Regras estritas de Preço:\n"
+        "1. Capture o valor completo dos preços exatamente como aparecem no texto, mantendo pontos e vírgulas (ex: '2.483,21' vira 'R$ 2.483,21', '1.262' vira 'R$ 1.262').\n"
+        "2. Certifique-se de adicionar sempre o prefixo 'R$ ' com espaço caso ele não exista no texto.\n"
+        "3. Se não houver preço anterior, defina 'preco_anterior' como null (sem aspas).\n"
+        "4. Responda apenas o JSON puro, sem explicações ou markdown."
     )
+
+    # EXEMPLOS DE APRENDIZADO (Few-Shot): Ensinamos a IA a lidar com pontos e milhares
+    exemplo_1_user = "🔥 Controle 8BitDo\n\nDe: R$ 349,86\n💵 Por: R$ 241\n\n🎟 Cupom: BRAE3\n\n🔗 https://aliexpress.com"
+    exemplo_1_assistant = {
+        "nome_produto": "Controle 8BitDo",
+        "preco_anterior": "R$ 349,86",
+        "preco_atual": "R$ 241",
+        "cupom": "BRAE3",
+        "link_cupom": None,
+        "link_produto": "https://aliexpress.com"
+    }
+
+    exemplo_2_user = "🔥 Projetor ThundeaL\n\nDe: R$ 2.483,21\n💵 Por: R$ 1.262\n\n🎟 Cupom: MASTERJR\n\n🔗 https://aliexpress.com"
+    exemplo_2_assistant = {
+        "nome_produto": "Projetor ThundeaL",
+        "preco_anterior": "R$ 2.483,21",
+        "preco_atual": "R$ 1.262",
+        "cupom": "MASTERJR",
+        "link_cupom": None,
+        "link_produto": "https://aliexpress.com"
+    }
 
     payload_dados = {
         "model": MODEL_NAME,
         "messages": [
             {"role": "system", "content": prompt_sistema},
+            # Injeção dos exemplos de calibração de preços
+            {"role": "user", "content": exemplo_1_user},
+            {"role": "assistant", "content": json.dumps(exemplo_1_assistant)},
+            {"role": "user", "content": exemplo_2_user},
+            {"role": "assistant", "content": json.dumps(exemplo_2_assistant)},
+            # Envio do texto real recebido pelo n8n
             {"role": "user", "content": f"Texto da oferta:\n{texto}"}
         ],
         "stream": False,
@@ -121,8 +114,8 @@ async def chamar_ollama(texto: str):
             
             json_puro = json.loads(resposta_limpa)
             
-            # Aplica o novo filtro de alta precisão para o Telegram/AliExpress
-            json_corrigido = ajustar_regras_telegram(json_puro, texto)
+            # Deixa o Python arrumar apenas os links e os nulos
+            json_corrigido = organizar_links_e_limpeza(json_puro, texto)
             
             oferta_validada = OfertaEstruturada(**json_corrigido)
             return oferta_validada.model_dump()
