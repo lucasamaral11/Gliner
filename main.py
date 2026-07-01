@@ -24,43 +24,53 @@ class OfertaEstruturada(BaseModel):
 
 def organizar_links_e_precos(dados_json, texto_bruto):
     """
-    Filtra e ajusta os dados extraídos garantindo conformidade com o texto real
+    Higienização avançada e mapeamento cirúrgico de links baseados na descrição da linha
     """
-    # 1. FILTRO E SEPARAÇÃO DE LINKS
-    links_no_texto = re.findall(r'(https?://\S+)', texto_bruto)
-    termos_banidos = ["t.me", "whatsapp", "mastertechjr", "youtube", "instagram", "facebook", "linktr.ee"]
-    links_lojas = [l for l in links_no_texto if not any(termo in l.lower() for termo in termos_banidos)]
+    linhas = [l.strip() for l in texto_bruto.split('\n') if l.strip()]
     
-    dados_json["link_cupom"] = None
-    dados_json["link_produto"] = None
+    # 1. SEPARAÇÃO PRECISA DE LINKS BASEADA EM TEXTO DA LINHA
+    link_produto_detectado = None
+    link_cupom_detectado = None
+    
+    # Varre as linhas do texto procurando links associados a intenções claras
+    for linha in linhas:
+        links_na_linha = re.findall(r'(https?://\S+)', linha)
+        if links_na_linha:
+            link = links_na_linha[0]
+            # Ignora links institucionais/redes sociais
+            if any(term in link.lower() for term in ["t.me", "whatsapp", "mastertechjr", "youtube", "instagram", "facebook", "linktr.ee"]):
+                continue
+                
+            linha_lower = linha.lower()
+            if "cupom" in linha_lower or "resgate" in linha_lower or "coletar" in linha_lower:
+                link_cupom_detectado = link
+            elif "compre" in linha_lower or "link" in linha_lower or "🛒" in linha_lower or "🔗" in linha_lower:
+                link_produto_detectado = link
+                
+    # Fallback de segurança caso a varredura por texto de linha falhe (comportamento clássico de ordens)
+    links_no_texto = re.findall(r'(https?://\S+)', texto_bruto)
+    links_lojas = [l for l in links_no_texto if not any(t in l.lower() for t in ["t.me", "whatsapp", "mastertechjr"])]
+    
+    if not link_produto_detectado and links_lojas:
+        # Geralmente o link de compra é o último link válido listado antes das redes sociais
+        link_produto_detectado = links_lojas[-1]
+    if not link_cupom_detectado and len(links_lojas) > 1:
+        # O link do cupom costuma vir antes do link do produto
+        link_cupom_detectado = links_lojas[0] if links_lojas[0] != link_produto_detectado else None
 
-    if links_lojas:
-        dados_json["link_produto"] = links_lojas[0]
-        for link in links_lojas:
-            for linha in texto_bruto.split('\n'):
-                if link in linha:
-                    if "cupom" in linha.lower() or "resgate" in linha.lower():
-                        dados_json["link_cupom"] = link
-                    elif "compre aqui" in linha.lower() or "por" in linha.lower() or "link do produto" in linha.lower():
-                        dados_json["link_produto"] = link
+    dados_json["link_produto"] = link_produto_detectado
+    dados_json["link_cupom"] = link_cupom_detectado
 
-        if not dados_json["link_produto"] and links_lojas:
-            dados_json["link_produto"] = links_lojas[0]
-        if not dados_json["link_cupom"] and len(links_lojas) > 1 and links_lojas[0] != dados_json["link_produto"]:
-            dados_json["link_cupom"] = links_lojas[1]
-
-    # 2. VALIDAÇÃO ULTRA ROBUSTA DE PREÇOS (DE / POR)
-    # Procura em todo o texto de forma insensível a maiúsculas/minúsculas o padrão "De ... Por ..."
+    # 2. VALIDAÇÃO HÍBRIDA DE PREÇOS (DE / POR)
     match_linha_precos = re.search(r'\bde\b\s*:?\s*r?\$?\s*(\d+(?:[\.,]\d+)*)\s*\bpor\b\s*:?\s*r?\$?\s*(\d+(?:[\.,]\d+)*)', texto_bruto, re.IGNORECASE)
     
     if match_linha_precos:
         dados_json["preco_anterior"] = match_linha_precos.group(1).strip()
         dados_json["preco_atual"] = match_linha_precos.group(2).strip()
     else:
-        # Lógica secundária caso os preços estejam em linhas separadas
         linha_de = None
         linha_por = None
-        for linha in texto_bruto.split('\n'):
+        for linha in linhas:
             if re.search(r'\bde\b\s*:?\s*r?\$?\s*\d+', linha, re.IGNORECASE):
                 linha_de = linha
             if re.search(r'\b(?:por|💵)\b\s*:?\s*r?\$?\s*\d+', linha, re.IGNORECASE):
@@ -79,10 +89,12 @@ def organizar_links_e_precos(dados_json, texto_bruto):
         if valor is None or str(valor).strip().lower() in ["null", "none", ""]:
             dados_json[campo] = None
         else:
-            # Remove qualquer sufixo de centavos zerados (.00 ou ,00) e limpa textos extras
-            valor_limpo = str(valor).split(',00')[0].split('.00')[0]
-            valor_limpo = valor_limpo.replace('R$', '').replace('(', '').replace(')', '').strip()
-            # Limpa o número caso tenha sobrado algum texto que a IA colocou (ex: "80 (3x sem juros)")
+            valor_str = str(valor)
+            # Remove .00 de centavos zerados que a IA possa inventar
+            if valor_str.endswith('.00') or valor_str.endswith(',00'):
+                valor_str = valor_str[:-3]
+            valor_limpo = valor_str.replace('R$', '').replace('(', '').replace(')', '').strip()
+            
             match_num = re.search(r'(\d+(?:[\.,]\d+)*)', valor_limpo)
             if match_num:
                 dados_json[campo] = f"R$ {match_num.group(1)}"
@@ -92,14 +104,12 @@ def organizar_links_e_precos(dados_json, texto_bruto):
     if dados_json.get("preco_anterior") == dados_json.get("preco_atual"):
         dados_json["preco_anterior"] = None
 
-    # 4. LIMPEZA REAL DE CUPOM (Deleta alucinações e emojis)
+    # 4. LIMPEZA REAL DE CUPOM (Valida fidelidade textual)
     cupom_ia = str(dados_json.get("cupom", "") or "").strip()
     if cupom_ia and cupom_ia.lower() != "null":
         cupom_limpo = cupom_ia.replace('🎟️', '').replace('🎟', '').strip()
-        
-        if cupom_limpo.lower() not in texto_bruto.lower():
-            dados_json["cupom"] = None
-        elif any(cupom_limpo in l for l in links_no_texto):
+        # Se for apenas a menção do valor do cupom (ex: R$90 OFF), mantém ativo por ser útil para o seu grupo
+        if cupom_limpo.lower() not in texto_bruto.lower() or any(cupom_limpo in l for l in links_no_texto):
             dados_json["cupom"] = None
         else:
             dados_json["cupom"] = cupom_limpo
@@ -121,7 +131,7 @@ async def chamar_ollama(texto: str):
         "}\n\n"
         "Regras cruciais:\n"
         "1. Capture o nome comercial completo do produto.\n"
-        "2. Se não houver um código de cupom explícito em formato de texto escrito no anúncio, defina a chave 'cupom' obrigatoriamente como null.\n"
+        "2. Se não houver um código de cupom explícito em formato de texto escrito no anúncio (ex: VALE20), mas houver uma descrição de desconto em valor (ex: R$90 OFF), coloque essa descrição na chave 'cupom'.\n"
         "3. Nunca invente ou adivinhe códigos de cupom."
     )
 
