@@ -24,7 +24,7 @@ class OfertaEstruturada(BaseModel):
 
 def organizar_links_e_precos(dados_json, texto_bruto):
     """
-    Camada de proteção em Python que corrige falhas de atenção do modelo de IA
+    Camada de proteção que separa links, valida preços e remove cupons falsos baseados em IDs de URL
     """
     # 1. FILTRO DE LINKS (Mantém apenas links válidos de lojas)
     links_no_texto = re.findall(r'(https?://\S+)', texto_bruto)
@@ -35,18 +35,23 @@ def organizar_links_e_precos(dados_json, texto_bruto):
     dados_json["link_produto"] = None
 
     if links_lojas:
-        dados_json["link_produto"] = links_lojas[0]
+        dados_json["link_produto"] = links_lojas[0] # O primeiro link de loja costuma ser o do produto
         for link in links_lojas:
             for linha in texto_bruto.split('\n'):
-                if link in linha and ("cupom" in linha.lower() or "resgate" in linha.lower()):
-                    dados_json["link_cupom"] = link
-                    if dados_json["link_produto"] == link and len(links_lojas) > 1:
-                        dados_json["link_produto"] = links_lojas[1]
+                if link in linha:
+                    if "cupom" in linha.lower() or "resgate" in linha.lower():
+                        dados_json["link_cupom"] = link
+                    elif "compre aqui" in linha.lower() or "🔥por" in linha.lower() or "link do produto" in linha.lower():
+                        dados_json["link_produto"] = link
+
+        # Garantias de preenchimento caso a varredura falhe
+        if not dados_json["link_produto"] and links_lojas:
+            dados_json["link_produto"] = links_lojas[0]
+        if not dados_json["link_cupom"] and len(links_lojas) > 1 and links_lojas[1] != dados_json["link_produto"]:
+            dados_json["link_cupom"] = links_lojas[1]
 
     # 2. ESCUDO DE PROTEÇÃO CONTRA PREÇOS INVERTIDOS OU APAGADOS PELA IA
-    # Se a IA apagou o preço anterior (deixou null), mas o texto bruto claramente tem a estrutura "De: ... Por:"
     if dados_json.get("preco_anterior") is None:
-        # Procura por linhas contendo "De:" e "Por:" ou símbolos monetários próximos
         linha_de = None
         linha_por = None
         
@@ -57,15 +62,14 @@ def organizar_links_e_precos(dados_json, texto_bruto):
                 linha_por = linha
 
         if linha_de and linha_por:
-            # Captura o número complexo com ponto/vírgula de cada uma das linhas encontradas
             match_de = re.search(r'(\d+(?:[\.,]\d{3})*(?:[\.,]\d{2})?)', linha_de)
-            match_por = re.search(r'(\d+(?:[\.,]\d{3})*(?:[\.,]\d{2})?)', linha_por)
+            match_por = re.search(r'(\d+(?:[\.,]\d{3})*(?:[\.,]\d{2})?)', line_por if 'line_por' in locals() else linha_por)
             
             if match_de and match_por:
                 dados_json["preco_anterior"] = f"R$ {match_de.group(1).strip()}"
                 dados_json["preco_atual"] = f"R$ {match_por.group(1).strip()}"
 
-    # 3. GARANTIA MONETÁRIA (Adiciona R$ se faltar e limpa falsos nulos em formato de string)
+    # 3. GARANTIA MONETÁRIA
     for campo in ["preco_atual", "preco_anterior"]:
         valor = dados_json.get(campo)
         if valor is None or str(valor).strip().lower() in ["null", "none", ""]:
@@ -73,12 +77,16 @@ def organizar_links_e_precos(dados_json, texto_bruto):
         elif "R$" not in str(valor):
             dados_json[campo] = f"R$ {str(valor).replace('R$', '').strip()}"
 
-    # Se a IA errou e colocou os mesmos valores nos dois campos, anula o anterior
     if dados_json.get("preco_anterior") == dados_json.get("preco_atual"):
         dados_json["preco_anterior"] = None
 
-    # Limpeza final do Cupom
-    if str(dados_json.get("cupom")).strip().lower() in ["null", "none", ""]:
+    # 4. BLINDAGEM DO CUPOM (Evita que a IA extraia IDs finais de links como se fossem cupons)
+    cupom_ia = str(dados_json.get("cupom", "") or "").strip()
+    if cupom_ia and cupom_ia.lower() != "null":
+        # Se o cupom inventado estiver contido dentro de qualquer link do texto bruto, anula ele
+        if cupom_ia in texto_bruto and any(cupom_ia in l for l in links_no_texto):
+            dados_json["cupom"] = None
+    else:
         dados_json["cupom"] = None
 
     return dados_json
@@ -96,26 +104,14 @@ async def chamar_ollama(texto: str):
         "}\n\n"
         "Regras:\n"
         "1. Capture o nome comercial completo do produto.\n"
-        "2. Identifique corretamente o preço de promoção ('Por:') e o preço original ('De:').\n"
-        "3. Não mude o valor dos números. Responda apenas o JSON puro."
+        "2. Se não houver um código de cupom de texto escrito (ex: VALE20), deixe a chave 'cupom' como null.\n"
+        "3. Responda apenas o JSON puro."
     )
-
-    exemplo_1_user = "🔥 Controle 8BitDo\n\nDe: R$ 349,86\n💵 Por: R$ 241\n\n🎟 Cupom: BRAE3\n\n🔗 https://aliexpress.com"
-    exemplo_1_assistant = {
-        "nome_produto": "Controle 8BitDo",
-        "preco_anterior": "R$ 349,86",
-        "preco_atual": "R$ 241",
-        "cupom": "BRAE3",
-        "link_cupom": None,
-        "link_produto": "https://aliexpress.com"
-    }
 
     payload_dados = {
         "model": MODEL_NAME,
         "messages": [
             {"role": "system", "content": prompt_sistema},
-            {"role": "user", "content": exemplo_1_user},
-            {"role": "assistant", "content": json.dumps(exemplo_1_assistant)},
             {"role": "user", "content": f"Texto da oferta:\n{texto}"}
         ],
         "stream": False,
@@ -130,8 +126,6 @@ async def chamar_ollama(texto: str):
             resposta_limpa = re.sub(r"```json\s*|```", "", resposta_ia).strip()
             
             json_puro = json.loads(resposta_limpa)
-            
-            # Deixa a engenharia de software Python validar e consertar os erros cometidos pelo LLM
             json_corrigido = organizar_links_e_precos(json_puro, texto)
             
             oferta_validada = OfertaEstruturada(**json_corrigido)
