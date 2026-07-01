@@ -49,8 +49,15 @@ def organizar_links_e_precos(dados_json, texto_bruto):
         if not dados_json["link_cupom"] and len(links_lojas) > 1 and links_lojas[0] != dados_json["link_produto"]:
             dados_json["link_cupom"] = links_lojas[1]
 
-    # 2. VALIDAÇÃO HÍBRIDA DE PREÇOS (DE / POR) - Suporta formatos sem dois pontos
-    if dados_json.get("preco_anterior") is None:
+    # 2. VALIDAÇÃO ULTRA ROBUSTA DE PREÇOS (DE / POR)
+    # Procura em todo o texto de forma insensível a maiúsculas/minúsculas o padrão "De ... Por ..."
+    match_linha_precos = re.search(r'\bde\b\s*:?\s*r?\$?\s*(\d+(?:[\.,]\d+)*)\s*\bpor\b\s*:?\s*r?\$?\s*(\d+(?:[\.,]\d+)*)', texto_bruto, re.IGNORECASE)
+    
+    if match_linha_precos:
+        dados_json["preco_anterior"] = match_linha_precos.group(1).strip()
+        dados_json["preco_atual"] = match_linha_precos.group(2).strip()
+    else:
+        # Lógica secundária caso os preços estejam em linhas separadas
         linha_de = None
         linha_por = None
         for linha in texto_bruto.split('\n'):
@@ -60,8 +67,8 @@ def organizar_links_e_precos(dados_json, texto_bruto):
                 linha_por = linha
 
         if linha_de and linha_por:
-            match_de = re.search(r'(\d+(?:[\.,]\d{3})*(?:[\.,]\d{2})?)', linha_de)
-            match_por = re.search(r'(\d+(?:[\.,]\d{3})*(?:[\.,]\d{2})?)', linha_por)
+            match_de = re.search(r'(\d+(?:[\.,]\d+)*)', linha_de)
+            match_por = re.search(r'(\d+(?:[\.,]\d+)*)', linha_por)
             if match_de and match_por:
                 dados_json["preco_anterior"] = match_de.group(1).strip()
                 dados_json["preco_atual"] = match_por.group(1).strip()
@@ -72,9 +79,15 @@ def organizar_links_e_precos(dados_json, texto_bruto):
         if valor is None or str(valor).strip().lower() in ["null", "none", ""]:
             dados_json[campo] = None
         else:
-            # Remove sufixos .00 ou ,00 e limpa o texto
-            valor_limpo = str(valor).replace('.00', '').replace(',00', '').replace('R$', '').strip()
-            dados_json[campo] = f"R$ {valor_limpo}"
+            # Remove qualquer sufixo de centavos zerados (.00 ou ,00) e limpa textos extras
+            valor_limpo = str(valor).split(',00')[0].split('.00')[0]
+            valor_limpo = valor_limpo.replace('R$', '').replace('(', '').replace(')', '').strip()
+            # Limpa o número caso tenha sobrado algum texto que a IA colocou (ex: "80 (3x sem juros)")
+            match_num = re.search(r'(\d+(?:[\.,]\d+)*)', valor_limpo)
+            if match_num:
+                dados_json[campo] = f"R$ {match_num.group(1)}"
+            else:
+                dados_json[campo] = f"R$ {valor_limpo}"
 
     if dados_json.get("preco_anterior") == dados_json.get("preco_atual"):
         dados_json["preco_anterior"] = None
@@ -82,13 +95,10 @@ def organizar_links_e_precos(dados_json, texto_bruto):
     # 4. LIMPEZA REAL DE CUPOM (Deleta alucinações e emojis)
     cupom_ia = str(dados_json.get("cupom", "") or "").strip()
     if cupom_ia and cupom_ia.lower() != "null":
-        # Remove emojis de ticket que venham junto
         cupom_limpo = cupom_ia.replace('🎟️', '').replace('🎟', '').strip()
         
-        # Se o cupom retornado NÃO existir no texto bruto, vira None
         if cupom_limpo.lower() not in texto_bruto.lower():
             dados_json["cupom"] = None
-        # Proteção contra capturar fragmentos de links
         elif any(cupom_limpo in l for l in links_no_texto):
             dados_json["cupom"] = None
         else:
@@ -124,7 +134,7 @@ async def chamar_ollama(texto: str):
         "stream": False,
         "format": "json",
         "options": {
-            "temperature": 0.0,  # ZERA a criatividade do Ollama (Fidelidade Máxima)
+            "temperature": 0.0,
             "top_p": 0.1
         }
     }
