@@ -1,6 +1,6 @@
 import asyncio
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Optional
 import httpx
 import json
@@ -14,7 +14,6 @@ MODEL_NAME = "qwen2.5-coder:1.5b"
 class TextoPayload(BaseModel):
     texto: str
 
-# Definição estrita do formato do JSON. O Pydantic garante que APENAS estas chaves existam.
 class OfertaEstruturada(BaseModel):
     nome_produto: str
     preco_anterior: Optional[str] = None
@@ -23,71 +22,65 @@ class OfertaEstruturada(BaseModel):
     link_cupom: Optional[str] = None
     link_produto: str
 
-def organizar_links(dados_dict, texto_bruto):
+def ajustar_regras_telegram(dados_json, texto_bruto):
     """
-    Varre o texto para separar o link do cupom e do produto de forma lógica
+    Ajusta o nome do produto caso a IA pegue apenas o bordão da oferta
     """
+    nome_capturado = dados_json.get("nome_produto", "").strip()
+    linhas = [l.strip() for l in texto_bruto.split('\n') if l.strip()]
+    
+    # Se o nome capturado for muito curto ou estiver idêntico à primeira linha da mensagem
+    if len(linhas) > 1 and (len(nome_capturado.split()) <= 3 or nome_capturado.lower() in linhas[0].lower()):
+        # Varre as primeiras linhas procurando palavras-chave de produtos comerciais
+        palavras_chave = ["tênis", "smart", "tv", "notebook", "fone", "caixa", "placa", "processador", "monitor", "smartphone", "iphone"]
+        for linha in linhas[:3]:
+            if any(p in linha.lower() for p in palavras_chave):
+                dados_json["nome_produto"] = linha
+                break
+                
+    # Organização de Links
     links_no_texto = re.findall(r'(https?://\S+)', texto_bruto)
     links_validos = [l for l in links_no_texto if "t.me" not in l and "whatsapp" not in l]
     
-    dados_dict["link_cupom"] = None
-    dados_dict["link_produto"] = None
+    dados_json["link_cupom"] = None
+    dados_json["link_produto"] = None
 
     if len(links_validos) == 1:
-        dados_dict["link_produto"] = links_validos[0]
+        dados_json["link_produto"] = links_validos[0]
     elif len(links_validos) >= 2:
         for link in links_validos:
             for linha in texto_bruto.split('\n'):
                 if link in linha:
                     if "cupom" in linha.lower() or "resgate" in linha.lower():
-                        dados_dict["link_cupom"] = link
+                        dados_json["link_cupom"] = link
                     else:
-                        dados_json_link = link
-                        dados_dict["link_produto"] = link
+                        dados_json["link_produto"] = link
 
-        if not dados_dict["link_produto"] and links_validos:
-            dados_dict["link_produto"] = links_validos[-1]
-        if not dados_dict["link_cupom"] and len(links_validos) > 1 and links_validos[0] != dados_dict["link_produto"]:
-            dados_dict["link_cupom"] = links_validos[0]
-
-    return dados_dict
+        if not dados_json["link_produto"] and links_validos:
+            dados_json["link_produto"] = links_validos[-1]
+            
+    return dados_json
 
 async def chamar_ollama(texto: str):
     prompt_sistema = (
-        "Você é um extrator de dados de ofertas. Analise o texto e extraia as informações para o formato JSON.\n"
-        "Você deve preencher APENAS as seguintes chaves:\n"
-        "- nome_produto (string)\n"
-        "- preco_anterior (string ou null)\n"
-        "- preco_atual (string)\n"
-        "- cupom (string ou null)\n"
-        "- link_cupom (string ou null)\n"
-        "- link_produto (string)\n\n"
-        "Regras estritas:\n"
-        "1. Nunca crie chaves com emojis ou nomes diferentes das listadas acima.\n"
-        "2. Formate os preços sempre com 'R$' (ex: R$ 673).\n"
-        "3. Ignore avisos de anúncios ou links de redes sociais."
+        "Você é um extrator de dados de ofertas para o Telegram. Analise o texto e responda APENAS com um objeto JSON no formato:\n"
+        "{\n"
+        "  \"nome_produto\": \"string\",\n"
+        "  \"preco_anterior\": \"string ou null\",\n"
+        "  \"preco_atual\": \"string\",\n"
+        "  \"cupom\": \"string ou null\",\n"
+        "  \"link_cupom\": \"string ou null\",\n"
+        "  \"link_produto\": \"string\"\n"
+        "}\n\n"
+        "Regra Estrita de Nome:\n"
+        "Ignore bordões ou chamadas de efeito na primeira linha (como 'CASUALZINHO DA PUMA', 'ESTOUROU', 'IMPERDÍVEL').\n"
+        "Capture sempre o nome real e comercial do produto que possui marca e descrição (ex: 'Tênis Casual Masculino E Feminino Up Puma (34 a 43)')."
     )
-
-    exemplo_usuario = (
-        " Smart TV 32” Britânia B32CRA HD Wi-Fi\n\n💵 673\n\n🎟️ Resgate Cupom 30 OFF aqui:\n"
-        "https://s.shopee.com.br/qehMgA6NA\n\n🔗 https://s.shopee.com.br/4Av9Knt0po"
-    )
-    
-    exemplo_assistente = {
-        "nome_produto": "Smart TV 32” Britânia B32CRA HD Wi-Fi",
-        "preco_anterior": None,
-        "preco_atual": "R$ 673",
-        "cupom": "30 OFF",
-        "link_cupom": "https://s.shopee.com.br/qehMgA6NA",
-        "link_produto": "https://s.shopee.com.br/4Av9Knt0po"
-    }
 
     payload_dados = {
         "model": MODEL_NAME,
         "messages": [
             {"role": "system", "content": prompt_sistema},
-            {"role": "user", "content": f"Texto da oferta:\n{exemplo_usuario}"},
-            {"role": "assistant", "content": json.dumps(exemplo_assistente)},
             {"role": "user", "content": f"Texto da oferta:\n{texto}"}
         ],
         "stream": False,
@@ -103,26 +96,14 @@ async def chamar_ollama(texto: str):
             
             json_puro = json.loads(resposta_limpa)
             
-            # 1. Filtra os links primeiro
-            json_com_links = organizar_links(json_puro, texto)
+            # Aplica o filtro híbrido do Telegram
+            json_corrigido = ajustar_regras_telegram(json_puro, texto)
             
-            # 2. Força a validação do Pydantic (destrói chaves extras como 'Anúncio' ou 'Telegram')
-            oferta_validada = OfertaEstruturada(**json_com_links)
-            
-            # Retorna o objeto limpo convertido em dicionário Python comum
+            oferta_validada = OfertaEstruturada(**json_corrigido)
             return oferta_validada.model_dump()
             
         except Exception as e:
-            # Fallback de emergência caso a IA quebre muito o formato
-            print(f"Erro na validação do Pydantic, limpando manualmente: {str(e)}")
-            return {
-                "nome_produto": json_puro.get("nome_produto", "Produto não identificado"),
-                "preco_anterior": json_puro.get("preco_anterior", None),
-                "preco_atual": json_puro.get("preco_atual", "Consulte o link"),
-                "cupom": json_puro.get("cupom", None),
-                "link_cupom": json_puro.get("link_cupom", None),
-                "link_produto": json_puro.get("link_produto", "")
-            }
+            raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/extrair-oferta")
 async def extrair_oferta(payload: TextoPayload):
