@@ -24,21 +24,40 @@ class OfertaEstruturada(BaseModel):
 
 def ajustar_regras_telegram(dados_json, texto_bruto):
     """
-    Ajusta o nome do produto caso a IA pegue apenas o bordão da oferta
+    Ajusta e higieniza preços, nomes e links vindos da IA
     """
+    # 1. Correção Estrita de Preços (Garante R$ e remove "null" em formato de texto)
+    for campo in ["preco_atual", "preco_anterior"]:
+        valor = dados_json.get(campo)
+        
+        # Se a IA preencheu o campo com a palavra literal "null" (texto), limpa para None
+        if valor is None or str(valor).strip().lower() in ["null", "none", ""]:
+            dados_json[campo] = None
+            continue
+            
+        valor_str = str(valor).strip()
+        
+        # Extrai apenas os números do preço para remontar com segurança
+        numeros = "".join(re.findall(r'\d+', valor_str))
+        
+        if numeros:
+            # Sempre monta no formato padrão do seu grupo: R$ X.XXX
+            dados_json[campo] = f"R$ {numeros}"
+        else:
+            dados_json[campo] = None
+
+    # 2. Correção de Título Inteligente (Caso a IA pegue apenas chamadas de efeito)
     nome_capturado = dados_json.get("nome_produto", "").strip()
     linhas = [l.strip() for l in texto_bruto.split('\n') if l.strip()]
     
-    # Se o nome capturado for muito curto ou estiver idêntico à primeira linha da mensagem
     if len(linhas) > 1 and (len(nome_capturado.split()) <= 3 or nome_capturado.lower() in linhas[0].lower()):
-        # Varre as primeiras linhas procurando palavras-chave de produtos comerciais
-        palavras_chave = ["tênis", "smart", "tv", "notebook", "fone", "caixa", "placa", "processador", "monitor", "smartphone", "iphone"]
+        palavras_chave = ["tênis", "smart", "tv", "notebook", "fone", "caixa", "placa", "processador", "monitor", "smartphone", "iphone", "geforce", "rtx"]
         for linha in linhas[:3]:
             if any(p in linha.lower() for p in palavras_chave):
                 dados_json["nome_produto"] = linha
                 break
-                
-    # Organização de Links
+
+    # 3. Organização Segura de Links baseada nas linhas do Telegram
     links_no_texto = re.findall(r'(https?://\S+)', texto_bruto)
     links_validos = [l for l in links_no_texto if "t.me" not in l and "whatsapp" not in l]
     
@@ -72,9 +91,11 @@ async def chamar_ollama(texto: str):
         "  \"link_cupom\": \"string ou null\",\n"
         "  \"link_produto\": \"string\"\n"
         "}\n\n"
-        "Regra Estrita de Nome:\n"
-        "Ignore bordões ou chamadas de efeito na primeira linha (como 'CASUALZINHO DA PUMA', 'ESTOUROU', 'IMPERDÍVEL').\n"
-        "Capture sempre o nome real e comercial do produto que possui marca e descrição (ex: 'Tênis Casual Masculino E Feminino Up Puma (34 a 43)')."
+        "Regras:\n"
+        "1. Capture o nome comercial completo do produto.\n"
+        "2. Formate os preços com R$ (ex: R$ 2199).\n"
+        "3. Se não houver preço anterior, preencha a chave preco_anterior com null (sem aspas).\n"
+        "4. Responda apenas o JSON puro."
     )
 
     payload_dados = {
@@ -96,7 +117,7 @@ async def chamar_ollama(texto: str):
             
             json_puro = json.loads(resposta_limpa)
             
-            # Aplica o filtro híbrido do Telegram
+            # Executa a higienização forçada em Python antes de validar
             json_corrigido = ajustar_regras_telegram(json_puro, texto)
             
             oferta_validada = OfertaEstruturada(**json_corrigido)
