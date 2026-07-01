@@ -5,7 +5,7 @@ import httpx
 import json
 import re
 
-app = FastAPI(title="Qwen Robust Extractor API")
+app = FastAPI(title="Qwen Few-Shot Extractor API")
 
 OLLAMA_URL = "http://187.127.36.194:11434/api/chat"
 MODEL_NAME = "qwen2.5-coder:1.5b" 
@@ -13,53 +13,10 @@ MODEL_NAME = "qwen2.5-coder:1.5b"
 class TextoPayload(BaseModel):
     texto: str
 
-def tratar_regras_negocio(dados_json, texto_bruto):
+def organizar_links(dados_json, texto_bruto):
     """
-    Filtra e limpa alucinações da IA e erros de leitura de preços em links
+    Mantém apenas a inteligência simples de separação de links baseada nas linhas do texto
     """
-    # 1. Extração Limpa de PreçosDireto do Texto Bruto (Ignorando URLs para não misturar números)
-    # Remove as URLs do texto temporariamente apenas para caçar os preços reais
-    texto_sem_links = re.sub(r'https?://\S+', '', texto_bruto)
-    
-    # Encontra todos os blocos numéricos soltos que representam valores (ex: 673 ou 932,00)
-    valores_encontrados = re.findall(r'(?:R\$\s*)?(\d+(?:[\.,]\d{2})?)', texto_sem_links)
-    
-    # Limpa os valores encontrados transformando em números inteiros para comparação
-    valores_limpos = []
-    for v in valores_encontrados:
-        v_num = "".join(re.findall(r'\d+', v))
-        if v_num and len(v_num) <= 5: # Evita pegar números gigantescos que seriam IDs
-            valores_limpos.append(int(v_num))
-            
-    # Aplica a regra de preços com base nos valores REAIS do texto
-    if len(valores_limpos) == 1:
-        dados_json["preco_atual"] = f"R$ {valores_limpos[0]}"
-        dados_json["preco_anterior"] = None
-    elif len(valores_limpos) >= 2:
-        # Se achou dois preços, o maior é o anterior e o menor é o atual (comum em promoções)
-        maior_preco = max(valores_limpos)
-        menor_preco = min(valores_limpos)
-        if maior_preco != menor_preco:
-            dados_json["preco_anterior"] = f"R$ {maior_preco}"
-            dados_json["preco_atual"] = f"R$ {menor_preco}"
-        else:
-            dados_json["preco_atual"] = f"R$ {valores_limpos[0]}"
-            dados_json["preco_anterior"] = None
-    else:
-        # Fallback de segurança usando o que a IA tentou ler, mas limpando excessos
-        p_at = "".join(re.findall(r'\d+', str(dados_json.get("preco_atual", ""))))
-        if p_at and len(p_at) <= 4:
-            dados_json["preco_atual"] = f"R$ {p_at}"
-
-    # 2. Limpeza Cirúrgica do Cupom (Pega apenas o código ou a porcentagem)
-    cupom_cru = str(dados_json.get("cupom", "") or "").strip()
-    match_cupom = re.search(r'(\d+\s*OFF|[A-Z0-9]{4,}\b)', cupom_cru, re.IGNORECASE)
-    if match_cupom:
-        dados_json["cupom"] = match_cupom.group(1).upper()
-    elif "null" in cupom_cru.lower() or not cupom_cru:
-        dados_json["cupom"] = None
-
-    # 3. Separação Estrita de Links usando Regex no texto bruto original
     links_no_texto = re.findall(r'(https?://\S+)', texto_bruto)
     links_validos = [l for l in links_no_texto if "t.me" not in l and "whatsapp" not in l]
     
@@ -69,9 +26,7 @@ def tratar_regras_negocio(dados_json, texto_bruto):
     if len(links_validos) == 1:
         dados_json["link_produto"] = links_validos[0]
     elif len(links_validos) >= 2:
-        # Varre as linhas do texto para associar o link correto à sua função
         for link in links_validos:
-            # Encontra a linha onde o link está inserido
             for linha in texto_bruto.split('\n'):
                 if link in linha:
                     if "cupom" in linha.lower() or "resgate" in linha.lower():
@@ -79,17 +34,17 @@ def tratar_regras_negocio(dados_json, texto_bruto):
                     else:
                         dados_json["link_produto"] = link
 
-        # Garantia de preenchimento caso a varredura de linha falhe
+        # Garantias de preenchimento caso a varredura falhe
         if not dados_json["link_produto"] and links_validos:
-            dados_json["link_produto"] = links_validos[-1] # Geralmente o último é o do produto
-        if not dados_json["link_cupom"] and len(links_validos) > 1:
+            dados_json["link_produto"] = links_validos[-1]
+        if not dados_json["link_cupom"] and len(links_validos) > 1 and links_validos[0] != dados_json["link_produto"]:
             dados_json["link_cupom"] = links_validos[0]
 
     return dados_json
 
 async def chamar_ollama(texto: str):
     prompt_sistema = (
-        "Você é um extrator de dados de ofertas. Responda APENAS com um objeto JSON no formato:\n"
+        "Você é um extrator de dados de ofertas. Você deve analisar o texto e responder APENAS com um objeto JSON no formato exato:\n"
         "{\n"
         "  \"nome_produto\": \"string\",\n"
         "  \"preco_anterior\": \"string ou null\",\n"
@@ -98,13 +53,40 @@ async def chamar_ollama(texto: str):
         "  \"link_cupom\": \"string ou null\",\n"
         "  \"link_produto\": \"string\"\n"
         "}\n"
-        "Regras: Extraia o nome completo do produto. Não invente números."
+        "Regras estritas:\n"
+        "1. Capture o nome COMPLETO do produto. Nunca resuma.\n"
+        "2. Formate os preços sempre com o prefixo 'R$' (ex: 'R$ 673').\n"
+        "3. Se houver apenas um preço listado para o produto, ele é o 'preco_atual'. O 'preco_anterior' DEVE ser null.\n"
+        "4. Não confunda a porcentagem ou valor do cupom (ex: 30 OFF) com o preço do produto.\n"
+        "5. Responda apenas o JSON puro, sem markdown."
     )
+
+    # EXEMPLO DE TREINAMENTO (Few-Shot): Ensinamos o modelo exatamente como agir
+    exemplo_usuario = (
+        " Smart TV 32” Britânia B32CRA HD Wi-Fi\n\n"
+        "💵 673\n\n"
+        "🎟️ Resgate Cupom 30 OFF aqui:\n"
+        "https://s.shopee.com.br/qehMgA6NA\n\n"
+        "🔗 https://s.shopee.com.br/4Av9Knt0po"
+    )
+    
+    exemplo_assistente = {
+        "nome_produto": "Smart TV 32” Britânia B32CRA HD Wi-Fi",
+        "preco_anterior": None,
+        "preco_atual": "R$ 673",
+        "cupom": "30 OFF",
+        "link_cupom": "https://s.shopee.com.br/qehMgA6NA",
+        "link_produto": "https://s.shopee.com.br/4Av9Knt0po"
+    }
 
     payload_dados = {
         "model": MODEL_NAME,
         "messages": [
             {"role": "system", "content": prompt_sistema},
+            # Injeta o exemplo perfeito na linha do tempo do chat
+            {"role": "user", "content": f"Texto da oferta:\n{exemplo_usuario}"},
+            {"role": "assistant", "content": json.dumps(exemplo_assistente)},
+            # Envia o texto real do usuário atual
             {"role": "user", "content": f"Texto da oferta:\n{texto}"}
         ],
         "stream": False,
@@ -119,7 +101,9 @@ async def chamar_ollama(texto: str):
             resposta_limpa = re.sub(r"```json\s*|```", "", resposta_ia).strip()
             
             json_puro = json.loads(resposta_limpa)
-            return tratar_regras_negocio(json_puro, texto)
+            
+            # Aplica apenas o organizador de links
+            return organizar_links(json_puro, texto)
         except Exception as e:
             raise Exception(f"Erro no processamento: {str(e)}")
 
