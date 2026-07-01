@@ -20,17 +20,19 @@ class OfertaEstruturada(BaseModel):
     preco_atual: str
     cupom: Optional[str] = None
     link_cupom: Optional[str] = None
-    link_produto: Optional[str] = None # Tornou-se opcional para evitar crash se o texto vier bizarro
+    link_produto: str
 
 def organizar_links_e_precos(dados_json, texto_bruto):
     """
-    Lista branca de lojas (White List) e tratamento estrito para retornar sempre Strings
+    Lista branca de lojas (White List) para ignorar qualquer link de grupo ou institucional externo
     """
     linhas = [l.strip() for l in texto_bruto.split('\n') if l.strip()]
     
     # 1. FILTRO POR LISTA BRANCA DE LOJAS VALIDADAS
     links_no_texto = re.findall(r'(https?://\S+)', texto_bruto)
-    lojas_permitidas = ["amazon", "shopee", "aliexpress", "mercadolivre", "meli", "magaziniluiza", "magalu", "casasbahia", "girafa", "kabum", "pichau", "terabyte"]
+    
+    # Apenas links que contenham estes termos serão aceitos como produtos ou cupons
+    lojas_permitidas = ["amazon", "shopee", "aliexpress", "mercadolivre", "meli", "magazineluiza", "magalu", "casasbahia", "girafa", "kabum", "pichau", "terabyte"]
     
     links_lojas = [
         l for l in links_no_texto 
@@ -44,7 +46,8 @@ def organizar_links_e_precos(dados_json, texto_bruto):
     for linha in linhas:
         links_na_linha = re.findall(r'(https?://\S+)', linha)
         if links_na_linha:
-            link = links_na_linha[0] # Garante que pega a String do primeiro link da linha
+            link = links_na_linha[0]
+            # Se o link da linha não for de uma loja válida, ignora totalmente
             if not any(loja in link.lower() for loja in lojas_permitidas):
                 continue
                 
@@ -54,25 +57,20 @@ def organizar_links_e_precos(dados_json, texto_bruto):
             elif "compre" in linha_lower or "link" in linha_lower or "🛒" in linha_lower or "🔗" in linha_lower or "por r$" in linha_lower:
                 link_produto_detectado = link
 
-    # Fallbacks inteligentes para garantir que sejam Strings puras
+    # Fallback inteligente se a varredura por linha não achar termos explícitos
     if not link_produto_detectado and links_lojas:
+        # Se houver apenas 1 link de loja, ele é obrigatoriamente o do produto
         link_produto_detectado = links_lojas[0]
-        
+    
     if len(links_lojas) >= 2 and not link_cupom_detectado:
+        # Se houver mais de um link de loja e não achamos o cupom por texto, mapeia o restante
         for l in links_lojas:
             if l != link_produto_detectado:
                 link_cupom_detectado = l
                 break
 
-    # SEGUNDO ESCUDO: Se a lista branca falhou por completo, pega qualquer link para não dar erro 500
-    if not link_produto_detectado and links_no_texto:
-        # Filtra apenas links que não sejam de canais óbvios
-        links_limpos = [l for l in links_no_texto if "t.me" not in l and "whatsapp" not in l]
-        if links_limpos:
-            link_produto_detectado = links_limpos[0]
-
-    dados_json["link_produto"] = str(link_produto_detectado) if link_produto_detectado else None
-    dados_json["link_cupom"] = str(link_cupom_detectado) if link_cupom_detectado else None
+    dados_json["link_produto"] = link_produto_detectado
+    dados_json["link_cupom"] = link_cupom_detectado
 
     # 2. VALIDAÇÃO HÍBRIDA DE PREÇOS (DE / POR)
     match_linha_precos = re.search(r'\bde\b\s*:?\s*r?\$?\s*(\d+(?:[\.,]\d+)*)\s*\bpor\b\s*:?\s*r?\$?\s*(\d+(?:[\.,]\d+)*)', texto_bruto, re.IGNORECASE)
@@ -85,7 +83,7 @@ def organizar_links_e_precos(dados_json, texto_bruto):
         linha_por = None
         for linha in linhas:
             if re.search(r'\bde\b\s*:?\s*r?\$?\s*\d+', linha, re.IGNORECASE):
-                linha_de = linha
+                linha_de = ...
             if re.search(r'\b(?:por|💵)\b\s*:?\s*r?\$?\s*\d+', linha, re.IGNORECASE):
                 linha_por = linha
 
