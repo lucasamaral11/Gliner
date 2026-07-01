@@ -8,7 +8,7 @@ import re
 
 app = FastAPI(title="Qwen Strict Schema API")
 
-OLLAMA_URL = "http://187.127.36.194:11434/api/chat"
+OLLAMA_URL = "http://ollama-e10mgfwnydotbjgl9upgsunt:11434/api/chat"
 MODEL_NAME = "qwen2.5-coder:1.5b" 
 
 class TextoPayload(BaseModel):
