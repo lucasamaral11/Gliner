@@ -59,11 +59,9 @@ def organizar_links_e_precos(dados_json, texto_bruto):
 
     # Fallback inteligente se a varredura por linha não achar termos explícitos
     if not link_produto_detectado and links_lojas:
-        # Se houver apenas 1 link de loja, ele é obrigatoriamente o do produto
         link_produto_detectado = links_lojas[0]
     
     if len(links_lojas) >= 2 and not link_cupom_detectado:
-        # Se houver mais de um link de loja e não achamos o cupom por texto, mapeia o restante
         for l in links_lojas:
             if l != link_produto_detectado:
                 link_cupom_detectado = l
@@ -83,7 +81,7 @@ def organizar_links_e_precos(dados_json, texto_bruto):
         linha_por = None
         for linha in linhas:
             if re.search(r'\bde\b\s*:?\s*r?\$?\s*\d+', linha, re.IGNORECASE):
-                linha_de = ...
+                linha_de = linha # Linha corrigida aqui (removida a ellipsis)
             if re.search(r'\b(?:por|💵)\b\s*:?\s*r?\$?\s*\d+', linha, re.IGNORECASE):
                 linha_por = linha
 
