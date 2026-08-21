@@ -478,7 +478,8 @@ async def chamar_ollama(
         "format": "json",
         "options": {
             "temperature": 0.0,
-            "top_p": 0.1
+            "top_p": 0.1,
+            "num_predict": 80
         }
     }
 
