@@ -23,7 +23,7 @@ OLLAMA_URL = os.getenv(
 
 MODEL_NAME = os.getenv(
     "OLLAMA_MODEL",
-    "qwen2.5-coder:3b"
+    "qwen2.5:3b"
 )
 
 OLLAMA_CONNECT_TIMEOUT = float(
