@@ -1,3 +1,4 @@
+import ast
 import json
 import logging
 import os
@@ -5,7 +6,7 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -18,17 +19,17 @@ from pydantic import BaseModel, Field
 
 NINE_ROUTER_BASE_URL = os.getenv(
     "NINE_ROUTER_BASE_URL",
-    ""
+    "",
 ).rstrip("/")
 
 NINE_ROUTER_API_KEY = os.getenv(
     "NINE_ROUTER_API_KEY",
-    ""
+    "",
 )
 
 MODEL_NAME = os.getenv(
     "NINE_ROUTER_MODEL",
-    ""
+    "",
 )
 
 AI_CONNECT_TIMEOUT = float(
@@ -121,7 +122,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Gliner Offer Extraction API",
-    version="1.5.0",
+    version="1.5.1",
     lifespan=lifespan,
 )
 
@@ -141,7 +142,7 @@ class TextoPayload(BaseModel):
 class OfertaEstruturada(BaseModel):
     nome_produto: str
     preco_anterior: Optional[str] = None
-    preco_atual: str
+    preco_atual: Optional[str] = None
     cupom: Optional[str] = None
     link_cupom: Optional[str] = None
     link_produto: Optional[str] = None
@@ -151,8 +152,11 @@ class OfertaEstruturada(BaseModel):
 # UTILITÁRIOS
 # ============================================================
 
-def limpar_valor_nulo(valor):
+def limpar_valor_nulo(valor: Any) -> Optional[str]:
     if valor is None:
+        return None
+
+    if isinstance(valor, (dict, list)):
         return None
 
     valor_str = str(valor).strip()
@@ -170,7 +174,9 @@ def limpar_valor_nulo(valor):
     return valor_str
 
 
-def extrair_primeiro_numero(texto: str):
+def extrair_primeiro_numero(
+    texto: str,
+) -> Optional[str]:
     if not texto:
         return None
 
@@ -185,7 +191,9 @@ def extrair_primeiro_numero(texto: str):
     return None
 
 
-def normalizar_preco(valor):
+def normalizar_preco(
+    valor: Any,
+) -> Optional[str]:
     valor = limpar_valor_nulo(valor)
 
     if valor is None:
@@ -216,8 +224,13 @@ def normalizar_preco(valor):
     return f"R$ {valor_str}"
 
 
-def limpar_string_extraida(valor):
+def limpar_string_extraida(
+    valor: Any,
+) -> Optional[str]:
     if valor is None:
+        return None
+
+    if isinstance(valor, (dict, list)):
         return None
 
     valor = str(valor).strip()
@@ -241,15 +254,56 @@ def limpar_string_extraida(valor):
 
 
 # ============================================================
+# NORMALIZAÇÃO DE CHAVES
+# ============================================================
+
+def normalizar_chaves(
+    dados: dict,
+) -> dict:
+    if not isinstance(dados, dict):
+        return {}
+
+    aliases = {
+        "produto": "nome_produto",
+        "_produto": "nome_produto",
+        "nome": "nome_produto",
+        "nome do produto": "nome_produto",
+        "preço_anterior": "preco_anterior",
+        "preco antigo": "preco_anterior",
+        "preço antigo": "preco_anterior",
+        "preço_atual": "preco_atual",
+        "preco atual": "preco_atual",
+        "preço atual": "preco_atual",
+        "codigo_cupom": "cupom",
+        "código_cupom": "cupom",
+        "url_cupom": "link_cupom",
+        "url_produto": "link_produto",
+        "link": "link_produto",
+        "url": "link_produto",
+    }
+
+    resultado = {}
+
+    for chave, valor in dados.items():
+        chave_normalizada = str(chave).strip().lower()
+
+        chave_final = aliases.get(
+            chave_normalizada,
+            chave_normalizada,
+        )
+
+        resultado[chave_final] = valor
+
+    return resultado
+
+
+# ============================================================
 # JSON ROBUSTO
 # ============================================================
 
-def extrair_objeto_json_balanceado(texto: str):
-    """
-    Procura um objeto JSON real dentro da resposta,
-    respeitando chaves dentro de strings.
-    """
-
+def extrair_objeto_json_balanceado(
+    texto: str,
+):
     if not texto:
         return None
 
@@ -262,7 +316,10 @@ def extrair_objeto_json_balanceado(texto: str):
     dentro_string = False
     escape = False
 
-    for i in range(inicio, len(texto)):
+    for i in range(
+        inicio,
+        len(texto),
+    ):
         char = texto[i]
 
         if dentro_string:
@@ -285,33 +342,47 @@ def extrair_objeto_json_balanceado(texto: str):
             profundidade -= 1
 
             if profundidade == 0:
-                trecho = texto[inicio:i + 1]
+                trecho = texto[
+                    inicio:i + 1
+                ]
 
                 try:
-                    return json.loads(trecho)
+                    resultado = json.loads(
+                        trecho
+                    )
+
+                    if isinstance(
+                        resultado,
+                        dict,
+                    ):
+                        return resultado
+
                 except json.JSONDecodeError:
-                    return None
+                    pass
+
+                try:
+                    resultado = ast.literal_eval(
+                        trecho
+                    )
+
+                    if isinstance(
+                        resultado,
+                        dict,
+                    ):
+                        return resultado
+
+                except (
+                    ValueError,
+                    SyntaxError,
+                ):
+                    pass
 
     return None
 
 
-def corrigir_json_fragmentado(texto: str):
-    """
-    Corrige respostas comuns de modelos que removem
-    a primeira chave/abrechave ou devolvem JSON incompleto.
-
-    Exemplo:
-
-    _produto":"TV","preco_atual":"R$ 100"
-
-    vira:
-
-    {
-      "nome_produto":"TV",
-      "preco_atual":"R$ 100"
-    }
-    """
-
+def corrigir_json_fragmentado(
+    texto: str,
+):
     if not texto:
         return None
 
@@ -345,22 +416,6 @@ def corrigir_json_fragmentado(texto: str):
             )
         )
 
-    elif re.match(
-        r'^_?produto\s*"\s*:',
-        texto,
-        flags=re.IGNORECASE,
-    ):
-        texto = (
-            '{"nome_produto":'
-            + re.sub(
-                r'^_?produto\s*"\s*:',
-                "",
-                texto,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-        )
-
     texto = texto.strip()
 
     if (
@@ -378,6 +433,18 @@ def corrigir_json_fragmentado(texto: str):
     except json.JSONDecodeError:
         pass
 
+    try:
+        resultado = ast.literal_eval(texto)
+
+        if isinstance(resultado, dict):
+            return resultado
+
+    except (
+        ValueError,
+        SyntaxError,
+    ):
+        pass
+
     return None
 
 
@@ -385,11 +452,30 @@ def corrigir_json_fragmentado(texto: str):
 # EXTRAÇÃO DE JSON
 # ============================================================
 
-def extrair_json_da_resposta(resposta: str):
-    if not resposta:
+def extrair_json_da_resposta(
+    resposta: Any,
+):
+    # Caso o 9router retorne diretamente um objeto
+    if isinstance(resposta, dict):
+        return normalizar_chaves(resposta)
+
+    # Caso retorne uma lista contendo um objeto
+    if isinstance(resposta, list):
+        if len(resposta) == 1:
+            item = resposta[0]
+
+            if isinstance(item, dict):
+                return normalizar_chaves(item)
+
         return None
 
-    texto = resposta.strip()
+    if resposta is None:
+        return None
+
+    texto = str(resposta).strip()
+
+    if not texto:
+        return None
 
     texto = re.sub(
         r"^```(?:json)?\s*",
@@ -407,28 +493,44 @@ def extrair_json_da_resposta(resposta: str):
 
     texto = texto.strip()
 
+    # JSON padrão
     try:
         resultado = json.loads(texto)
 
         if isinstance(resultado, dict):
-            return resultado
+            return normalizar_chaves(resultado)
 
     except json.JSONDecodeError:
         pass
 
+    # Dicionário Python com aspas simples
+    try:
+        resultado = ast.literal_eval(texto)
+
+        if isinstance(resultado, dict):
+            return normalizar_chaves(resultado)
+
+    except (
+        ValueError,
+        SyntaxError,
+    ):
+        pass
+
+    # JSON dentro de texto adicional
     resultado = extrair_objeto_json_balanceado(
         texto
     )
 
     if isinstance(resultado, dict):
-        return resultado
+        return normalizar_chaves(resultado)
 
+    # JSON fragmentado
     resultado = corrigir_json_fragmentado(
         texto
     )
 
     if isinstance(resultado, dict):
-        return resultado
+        return normalizar_chaves(resultado)
 
     return None
 
@@ -437,11 +539,19 @@ def extrair_json_da_resposta(resposta: str):
 # PARSER CHAVE / VALOR
 # ============================================================
 
-def extrair_formato_chave_valor(resposta: str):
-    if not resposta:
+def extrair_formato_chave_valor(
+    resposta: Any,
+):
+    if resposta is None:
         return None
 
-    texto = resposta.strip()
+    if isinstance(resposta, dict):
+        return normalizar_chaves(resposta)
+
+    texto = str(resposta).strip()
+
+    if not texto:
+        return None
 
     texto = re.sub(
         r"```(?:json)?",
@@ -455,16 +565,28 @@ def extrair_formato_chave_valor(resposta: str):
         "",
     ).strip()
 
-    def extrair_campo(chaves, chaves_seguinte):
+    def extrair_campo(
+        chaves,
+        chaves_seguinte,
+    ):
         nomes = "|".join(
             re.escape(chave)
             for chave in chaves
         )
 
-        seguintes = "|".join(
-            re.escape(chave)
-            for chave in chaves_seguinte
-        )
+        if chaves_seguinte:
+            seguintes = "|".join(
+                re.escape(chave)
+                for chave in chaves_seguinte
+            )
+
+            lookahead = (
+                r"(?=\s*,\s*(?:"
+                + seguintes
+                + r')\s*(?:"|)?\s*:|\s*$)'
+            )
+        else:
+            lookahead = r"(?=\s*[,}]?\s*$)"
 
         padrao = (
             r"(?:^|[,{\n])\s*"
@@ -473,15 +595,16 @@ def extrair_formato_chave_valor(resposta: str):
             + r")"
             r'\s*(?:"|)?\s*:\s*'
             r"(.+?)"
-            r"(?=\s*,\s*(?:"
-            + seguintes
-            + r')\s*(?:"|)?\s*:|\s*$)'
+            + lookahead
         )
 
         match = re.search(
             padrao,
             texto,
-            flags=re.IGNORECASE | re.DOTALL,
+            flags=(
+                re.IGNORECASE
+                | re.DOTALL
+            ),
         )
 
         if not match:
@@ -584,7 +707,9 @@ def extrair_formato_chave_valor(resposta: str):
 # PARSER PRINCIPAL
 # ============================================================
 
-def interpretar_resposta_ia(resposta: str):
+def interpretar_resposta_ia(
+    resposta: Any,
+):
     dados_json = extrair_json_da_resposta(
         resposta
     )
@@ -612,11 +737,15 @@ def interpretar_resposta_ia(resposta: str):
 # ============================================================
 
 def organizar_links_e_precos(
-    dados_json,
-    texto_bruto,
+    dados_json: dict,
+    texto_bruto: str,
 ):
     if not isinstance(dados_json, dict):
         dados_json = {}
+
+    dados_json = normalizar_chaves(
+        dados_json
+    )
 
     linhas = [
         linha.strip()
@@ -639,7 +768,8 @@ def organizar_links_e_precos(
         "shopee",
         "aliexpress",
         "mercadolivre",
-        "meli",
+        "meli.la",
+        "mercadolivre.com",
         "magazineluiza",
         "magalu",
         "casasbahia",
@@ -676,12 +806,6 @@ def organizar_links_e_precos(
             ".,;)"
         )
 
-        if not any(
-            loja in link.lower()
-            for loja in lojas_permitidas
-        ):
-            continue
-
         linha_lower = linha.lower()
 
         if (
@@ -691,12 +815,9 @@ def organizar_links_e_precos(
         ):
             link_cupom_detectado = link
 
-        elif (
-            "compre" in linha_lower
-            or "link" in linha_lower
-            or "🛒" in linha_lower
-            or "🔗" in linha_lower
-            or "por r$" in linha_lower
+        elif any(
+            loja in link.lower()
+            for loja in lojas_permitidas
         ):
             link_produto_detectado = link
 
@@ -797,7 +918,7 @@ def organizar_links_e_precos(
                 linha_de = linha
 
             if re.search(
-                r"\b(?:por|💵)\b\s*:?\s*r?\$?\s*\d+",
+                r"(?:\bpor\b|💵)\s*:?\s*r?\$?\s*\d+",
                 linha,
                 re.IGNORECASE,
             ):
@@ -885,7 +1006,30 @@ def organizar_links_e_precos(
             .strip()
         )
 
-    return dados_json
+    # ========================================================
+    # GARANTE TODAS AS CHAVES
+    # ========================================================
+
+    return {
+        "nome_produto": dados_json.get(
+            "nome_produto"
+        ),
+        "preco_anterior": dados_json.get(
+            "preco_anterior"
+        ),
+        "preco_atual": dados_json.get(
+            "preco_atual"
+        ),
+        "cupom": dados_json.get(
+            "cupom"
+        ),
+        "link_cupom": dados_json.get(
+            "link_cupom"
+        ),
+        "link_produto": dados_json.get(
+            "link_produto"
+        ),
+    }
 
 
 # ============================================================
@@ -964,7 +1108,7 @@ Use EXATAMENTE estas seis chaves:
 {
   "nome_produto": "string",
   "preco_anterior": "string ou null",
-  "preco_atual": "string",
+  "preco_atual": "string ou null",
   "cupom": "string ou null",
   "link_cupom": "string ou null",
   "link_produto": "string ou null"
@@ -1023,7 +1167,7 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         ],
         "temperature": 0.0,
         "top_p": 0.1,
-        "max_tokens": 7000,
+        "max_tokens": 1000,
         "stream": False,
         "enable_thinking": False,
     }
@@ -1142,33 +1286,33 @@ A resposta deve ser um ÚNICO objeto JSON válido.
             {},
         )
 
+        # Não convertemos imediatamente para str.
+        # Alguns provedores podem retornar dict diretamente.
         resposta_ia = message.get(
-            "content",
-            "",
+            "content"
         )
 
-        # ====================================================
-        # ALGUNS MODELOS PODEM RETORNAR CONTENT NONE
-        # ====================================================
-
-        if resposta_ia is None:
-            resposta_ia = ""
-
-        resposta_ia = str(
-            resposta_ia
-        ).strip()
+        completion_chars = (
+            len(resposta_ia)
+            if isinstance(resposta_ia, str)
+            else len(str(resposta_ia))
+            if resposta_ia is not None
+            else 0
+        )
 
         logger.info(
             "request_id=%s | "
             "finish_reason=%s | "
+            "completion_type=%s | "
             "completion_chars=%d",
             request_id,
             finish_reason,
-            len(resposta_ia),
+            type(resposta_ia).__name__,
+            completion_chars,
         )
 
         # ====================================================
-        # MODELOS DE SAFETY / RESPOSTAS NÃO UTILIZÁVEIS
+        # MODELOS DE SAFETY
         # ====================================================
 
         respostas_invalidas = {
@@ -1179,28 +1323,56 @@ A resposta deve ser um ÚNICO objeto JSON válido.
             "content blocked",
         }
 
-        if resposta_ia.lower() in respostas_invalidas:
+        if isinstance(resposta_ia, str):
+            resposta_limpa = (
+                resposta_ia.strip()
+            )
+
+            if (
+                resposta_limpa.lower()
+                in respostas_invalidas
+            ):
+                logger.error(
+                    "request_id=%s | "
+                    "modelo retornou resposta de safety | "
+                    "resposta=%s | "
+                    "model=%s",
+                    request_id,
+                    resposta_limpa,
+                    dados.get(
+                        "model",
+                        MODEL_NAME,
+                    ),
+                )
+
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "O modelo selecionado não retornou "
+                        "os dados da oferta."
+                    ),
+                )
+
+        if resposta_ia is None:
             logger.error(
                 "request_id=%s | "
-                "modelo retornou resposta de safety "
-                "em vez da extração | resposta=%s | model=%s",
+                "9router retornou content nulo | "
+                "finish_reason=%s",
                 request_id,
-                resposta_ia,
-                dados.get(
-                    "model",
-                    MODEL_NAME,
-                ),
+                finish_reason,
             )
 
             raise HTTPException(
                 status_code=502,
                 detail=(
-                    "O modelo selecionado não retornou "
-                    "os dados da oferta."
+                    "O serviço de IA não retornou dados."
                 ),
             )
 
-        if not resposta_ia:
+        if (
+            isinstance(resposta_ia, str)
+            and not resposta_ia.strip()
+        ):
             logger.error(
                 "request_id=%s | "
                 "9router retornou resposta vazia | "
@@ -1263,7 +1435,7 @@ A resposta deve ser um ÚNICO objeto JSON válido.
             )
 
         except Exception:
-            logger.error(
+            logger.exception(
                 "request_id=%s | "
                 "resposta não passou na validação | "
                 "dados=%s",
