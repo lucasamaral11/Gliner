@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import re
@@ -18,15 +17,18 @@ from pydantic import BaseModel, Field
 # ============================================================
 
 NINE_ROUTER_BASE_URL = os.getenv(
-"NINE_ROUTER_BASE_URL"
+"NINE_ROUTER_BASE_URL",
+""
 ).rstrip("/")
 
 NINE_ROUTER_API_KEY = os.getenv(
-"NINE_ROUTER_API_KEY"
+"NINE_ROUTER_API_KEY",
+""
 )
 
 MODEL_NAME = os.getenv(
-"NINE_ROUTER_MODEL"
+"NINE_ROUTER_MODEL",
+""
 )
 
 AI_CONNECT_TIMEOUT = float(
@@ -114,6 +116,12 @@ if http_client:
 logger.info("Gliner encerrado")
 ```
 
+# ============================================================
+
+# FASTAPI
+
+# ============================================================
+
 app = FastAPI(
 title="Gliner Offer Extraction API",
 version="1.4.0",
@@ -147,15 +155,11 @@ link_produto: Optional[str] = None
 
 # ============================================================
 
-def valor_nulo(valor):
-"""
-Converte valores vazios/null para None.
-"""
+def limpar_valor(valor):
+if valor is None:
+return None
 
 ```
-if valor is None:
-    return None
-
 valor = str(valor).strip()
 
 if not valor:
@@ -164,7 +168,6 @@ if not valor:
 if valor.lower() in {
     "null",
     "none",
-    "nil",
     "n/a",
     "na",
     "não informado",
@@ -175,300 +178,256 @@ if valor.lower() in {
 return valor
 ```
 
-def limpar_resposta_ia(resposta):
-"""
-Remove markdown e pequenas sujeiras que alguns modelos
-podem colocar na resposta.
-"""
-
-````
-if resposta is None:
-    return ""
-
-resposta = str(resposta).strip()
-
-resposta = re.sub(
-    r"^```(?:text|txt|json)?\s*",
-    "",
-    resposta,
-    flags=re.IGNORECASE,
-)
-
-resposta = re.sub(
-    r"\s*```$",
-    "",
-    resposta,
-)
-
-resposta = resposta.strip()
-
-return resposta
-````
-
-# ============================================================
-
-# PARSER DA RESPOSTA SIMPLES
-
-# ============================================================
-
-def extrair_campo_resposta(
-resposta: str,
-aliases,
-proximos_campos,
-):
-"""
-Extrai um campo de uma resposta no formato:
+def normalizar_preco(valor):
+valor = limpar_valor(valor)
 
 ```
-nome_produto: produto, preco_anterior: R$ 100,
-preco_atual: R$ 80, cupom: ABC, ...
+if valor is None:
+    return None
 
-Aceita pequenas variações como:
-
-nome_produto:
-_nome_produto:
-_produto:
-produto:
-"""
-
-aliases_ordenados = sorted(
-    aliases,
-    key=len,
-    reverse=True,
+valor = (
+    valor
+    .replace("R$", "")
+    .replace("r$", "")
+    .replace("(", "")
+    .replace(")", "")
+    .strip()
 )
 
-aliases_regex = "|".join(
-    re.escape(alias)
-    for alias in aliases_ordenados
-)
-
-proximos_regex = "|".join(
-    re.escape(campo)
-    for campo in proximos_campos
-)
-
-padrao = (
-    rf"(?:^|[,;\n])\s*"
-    rf"(?:{aliases_regex})"
-    rf"\s*:\s*"
-    rf"(.*?)"
-    rf"(?=\s*,?\s*(?:{proximos_regex})\s*:|$)"
-)
-
+# Remove textos como "no Pix", "à vista", etc.
 match = re.search(
-    padrao,
-    resposta,
-    flags=re.IGNORECASE | re.DOTALL,
+    r"\d+(?:[\.,]\d+)*",
+    valor,
 )
 
 if not match:
     return None
 
-valor = match.group(1).strip()
+numero = match.group(0)
 
-valor = valor.rstrip(" ,;")
+numero = (
+    numero
+    .replace(".00", "")
+    .replace(",00", "")
+)
 
-return valor_nulo(valor)
+return f"R$ {numero}"
 ```
 
-def parse_resposta_simples(
-resposta: str,
-):
+def limpar_link(link):
+if link is None:
+return None
+
+```
+link = str(link).strip()
+
+if link.lower() in {
+    "null",
+    "none",
+    "",
+}:
+    return None
+
+# Remove pontuação que possa vir grudada ao link
+link = link.rstrip(
+    ".,;)]}>\"'"
+)
+
+if not link.startswith("http"):
+    return None
+
+return link
+```
+
+# ============================================================
+
+# PARSER DA RESPOSTA DA IA
+
+# ============================================================
+
+def parsear_resposta_ia(resposta):
 """
-Converte a resposta simples da IA para um dicionário.
+Aceita respostas como:
 
-```
-Exemplo aceito:
-
+````
 nome_produto: Smart TV LG 50" UHD 4K AI UA85,
 preco_anterior: R$ 3.099,
 preco_atual: R$ 1.767,
 cupom: QUEROPROMOML,
 link_cupom: null,
 link_produto: https://meli.la/2v3p6sJ
+
+Também tolera:
+_produto:
+nome produto:
+pequenas variações de espaços.
 """
 
-resposta = limpar_resposta_ia(
-    resposta
+texto = resposta.strip()
+
+# Remove markdown caso algum modelo coloque
+# ``` ou ```text
+texto = re.sub(
+    r"```(?:text|json)?",
+    "",
+    texto,
+    flags=re.IGNORECASE,
 )
 
-campos = [
-    "nome_produto",
-    "preco_anterior",
-    "preco_atual",
-    "cupom",
-    "link_cupom",
-    "link_produto",
-]
+texto = texto.replace("```", "").strip()
 
 # --------------------------------------------------------
-# ALIASES
+# Localiza cada campo usando lookahead.
+# Assim valores podem conter vírgulas.
 # --------------------------------------------------------
 
-nome_produto = extrair_campo_resposta(
-    resposta,
-    [
-        "nome_produto",
-        "_nome_produto",
-        "_produto",
-        "produto",
-        "nome produto",
-    ],
-    [
-        "preco_anterior",
-        "preco_atual",
-        "cupom",
-        "link_cupom",
-        "link_produto",
-    ],
-)
+padroes = {
+    "nome_produto": [
+        r"(?:^|[\n,])\s*nome_produto\s*:\s*(.*?)(?=\s*,\s*preco_anterior\s*:|\s*,\s*preco_atual\s*:|\s*,\s*cupom\s*:|\s*,\s*link_cupom\s*:|\s*,\s*link_produto\s*:|$)",
 
-preco_anterior = extrair_campo_resposta(
-    resposta,
-    [
-        "preco_anterior",
-        "_preco_anterior",
-        "preço_anterior",
-        "_preço_anterior",
-        "preco anterior",
-        "preço anterior",
-    ],
-    [
-        "preco_atual",
-        "cupom",
-        "link_cupom",
-        "link_produto",
-    ],
-)
+        r"(?:^|[\n,])\s*nome\s+produto\s*:\s*(.*?)(?=\s*,\s*preco_anterior\s*:|\s*,\s*preco_atual\s*:|\s*,\s*cupom\s*:|\s*,\s*link_cupom\s*:|\s*,\s*link_produto\s*:|$)",
 
-preco_atual = extrair_campo_resposta(
-    resposta,
-    [
-        "preco_atual",
-        "_preco_atual",
-        "preço_atual",
-        "_preço_atual",
-        "preco atual",
-        "preço atual",
+        r"(?:^|[\n,])\s*_produto\s*:\s*(.*?)(?=\s*,\s*preco_anterior\s*:|\s*,\s*preco_atual\s*:|\s*,\s*cupom\s*:|\s*,\s*link_cupom\s*:|\s*,\s*link_produto\s*:|$)",
     ],
-    [
-        "cupom",
-        "link_cupom",
-        "link_produto",
-    ],
-)
 
-cupom = extrair_campo_resposta(
-    resposta,
-    [
-        "cupom",
-        "_cupom",
-        "codigo_cupom",
-        "código_cupom",
-        "codigo cupom",
-        "código cupom",
+    "preco_anterior": [
+        r"(?:^|[\n,])\s*preco_anterior\s*:\s*(.*?)(?=\s*,\s*preco_atual\s*:|\s*,\s*cupom\s*:|\s*,\s*link_cupom\s*:|\s*,\s*link_produto\s*:|$)",
     ],
-    [
-        "link_cupom",
-        "link_produto",
-    ],
-)
 
-link_cupom = extrair_campo_resposta(
-    resposta,
-    [
-        "link_cupom",
-        "_link_cupom",
-        "link cupom",
+    "preco_atual": [
+        r"(?:^|[\n,])\s*preco_atual\s*:\s*(.*?)(?=\s*,\s*cupom\s*:|\s*,\s*link_cupom\s*:|\s*,\s*link_produto\s*:|$)",
     ],
-    [
-        "link_produto",
-    ],
-)
 
-link_produto = extrair_campo_resposta(
-    resposta,
-    [
-        "link_produto",
-        "_link_produto",
-        "link produto",
+    "cupom": [
+        r"(?:^|[\n,])\s*cupom\s*:\s*(.*?)(?=\s*,\s*link_cupom\s*:|\s*,\s*link_produto\s*:|$)",
     ],
-    [],
-)
 
-dados = {
-    "nome_produto": nome_produto,
-    "preco_anterior": preco_anterior,
-    "preco_atual": preco_atual,
-    "cupom": cupom,
-    "link_cupom": link_cupom,
-    "link_produto": link_produto,
+    "link_cupom": [
+        r"(?:^|[\n,])\s*link_cupom\s*:\s*(.*?)(?=\s*,\s*link_produto\s*:|$)",
+    ],
+
+    "link_produto": [
+        r"(?:^|[\n,])\s*link_produto\s*:\s*(.*?)$",
+    ],
 }
 
-# --------------------------------------------------------
-# FALLBACK ESPECIAL PARA _produto
-# --------------------------------------------------------
+dados = {}
 
-if not dados["nome_produto"]:
-    match_produto = re.search(
-        r"(?:^|[,;\n])\s*_?produto\s*:\s*(.*?)"
-        r"(?=\s*,?\s*(?:preco_anterior|preço_anterior|"
-        r"preco_atual|preço_atual|cupom|link_cupom|"
-        r"link_produto)\s*:|$)",
-        resposta,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
+for campo, lista_padroes in padroes.items():
+    valor_encontrado = None
 
-    if match_produto:
-        dados["nome_produto"] = (
-            valor_nulo(
-                match_produto.group(1)
-                .strip()
-                .rstrip(" ,;")
-            )
+    for padrao in lista_padroes:
+        match = re.search(
+            padrao,
+            texto,
+            flags=re.IGNORECASE | re.DOTALL,
         )
 
-# --------------------------------------------------------
-# FALLBACK PARA RESPOSTA COM PREFIXOS ESTRANHOS
-# --------------------------------------------------------
+        if match:
+            valor_encontrado = match.group(1).strip()
+            break
 
-if not dados["nome_produto"]:
-    match_produto = re.search(
-        r"(?:_produto|produto|nome_produto)"
-        r"\s*:\s*(.+?)(?=\s*,\s*(?:preco_|preço_|cupom|link_))",
-        resposta,
-        flags=re.IGNORECASE | re.DOTALL,
+    dados[campo] = limpar_valor(
+        valor_encontrado
     )
 
-    if match_produto:
-        dados["nome_produto"] = (
-            valor_nulo(
-                match_produto.group(1)
-                .strip()
-                .rstrip(" ,;")
-            )
-        )
-
 # --------------------------------------------------------
-# LOG DE DEBUG
+# Remove aspas externas
 # --------------------------------------------------------
 
-logger.debug(
-    "Resposta parseada | dados=%s",
-    dados,
+for campo in dados:
+    if isinstance(dados[campo], str):
+        dados[campo] = dados[campo].strip()
+
+        if (
+            len(dados[campo]) >= 2
+            and dados[campo][0] == '"'
+            and dados[campo][-1] == '"'
+        ):
+            dados[campo] = dados[campo][1:-1].strip()
+
+# --------------------------------------------------------
+# Validação do nome
+# --------------------------------------------------------
+
+nome = dados.get("nome_produto")
+
+if nome:
+    nome = nome.strip(" ,;")
+
+if not nome:
+    logger.error(
+        "não foi possível extrair nome_produto | resposta=%s",
+        resposta,
+    )
+
+    raise HTTPException(
+        status_code=502,
+        detail="O serviço de IA não retornou o nome do produto.",
+    )
+
+dados["nome_produto"] = nome
+
+# --------------------------------------------------------
+# Normalização dos preços
+# --------------------------------------------------------
+
+dados["preco_anterior"] = normalizar_preco(
+    dados.get("preco_anterior")
+)
+
+dados["preco_atual"] = normalizar_preco(
+    dados.get("preco_atual")
+)
+
+# --------------------------------------------------------
+# Cupom
+# --------------------------------------------------------
+
+cupom = limpar_valor(
+    dados.get("cupom")
+)
+
+if cupom:
+    cupom = (
+        cupom
+        .replace("🎟️", "")
+        .replace("🎟", "")
+        .strip()
+        .strip(",")
+    )
+
+    if cupom.lower() in {
+        "null",
+        "none",
+    }:
+        cupom = None
+
+dados["cupom"] = cupom
+
+# --------------------------------------------------------
+# Links
+# --------------------------------------------------------
+
+dados["link_cupom"] = limpar_link(
+    dados.get("link_cupom")
+)
+
+dados["link_produto"] = limpar_link(
+    dados.get("link_produto")
 )
 
 return dados
-```
+````
 
 # ============================================================
 
-# ORGANIZAÇÃO E VALIDAÇÃO
+# ORGANIZAÇÃO E VALIDAÇÃO DETERMINÍSTICA
 
 # ============================================================
 
 def organizar_links_e_precos(
-dados_json,
+dados,
 texto_bruto,
 ):
 linhas = [
@@ -504,7 +463,7 @@ lojas_permitidas = [
 ]
 
 links_lojas = [
-    link.rstrip(".,);]}")
+    link.rstrip(".,;)]}>\"'")
     for link in links_no_texto
     if any(
         loja in link.lower()
@@ -525,7 +484,7 @@ for linha in linhas:
         continue
 
     link = links_na_linha[0].rstrip(
-        ".,);]}"
+        ".,;)]}>\"'"
     )
 
     if not any(
@@ -564,18 +523,19 @@ if (
             link_cupom_detectado = link
             break
 
-if not link_produto_detectado and links_no_texto:
+if (
+    not link_produto_detectado
+    and links_no_texto
+):
     links_limpos = [
-        link.rstrip(".,);]}")
+        link.rstrip(".,;)]}>\"'")
         for link in links_no_texto
         if "t.me" not in link.lower()
         and "whatsapp" not in link.lower()
     ]
 
     if links_limpos:
-        link_produto_detectado = (
-            links_limpos[0]
-        )
+        link_produto_detectado = links_limpos[0]
 
 if (
     link_produto_detectado
@@ -583,20 +543,22 @@ if (
 ):
     link_cupom_detectado = None
 
-dados_json["link_produto"] = (
-    str(link_produto_detectado)
-    if link_produto_detectado
-    else None
-)
+# ========================================================
+# O TEXTO ORIGINAL TEM PRIORIDADE PARA LINKS
+# ========================================================
 
-dados_json["link_cupom"] = (
-    str(link_cupom_detectado)
-    if link_cupom_detectado
-    else None
-)
+if link_produto_detectado:
+    dados["link_produto"] = (
+        link_produto_detectado
+    )
+
+if link_cupom_detectado:
+    dados["link_cupom"] = (
+        link_cupom_detectado
+    )
 
 # ========================================================
-# 2. VALIDAÇÃO HÍBRIDA DE PREÇOS
+# 2. PREÇOS DETERMINÍSTICOS
 # ========================================================
 
 match_linha_precos = re.search(
@@ -609,12 +571,12 @@ match_linha_precos = re.search(
 )
 
 if match_linha_precos:
-    dados_json["preco_anterior"] = (
-        match_linha_precos.group(1).strip()
+    dados["preco_anterior"] = (
+        f"R$ {match_linha_precos.group(1)}"
     )
 
-    dados_json["preco_atual"] = (
-        match_linha_precos.group(2).strip()
+    dados["preco_atual"] = (
+        f"R$ {match_linha_precos.group(2)}"
     )
 
 else:
@@ -622,6 +584,7 @@ else:
     linha_por = None
 
     for linha in linhas:
+
         if re.search(
             r"\bde\b\s*:?\s*r?\$?\s*\d+",
             linha,
@@ -648,85 +611,41 @@ else:
         )
 
         if match_de and match_por:
-            dados_json["preco_anterior"] = (
-                match_de.group(1).strip()
+            dados["preco_anterior"] = (
+                f"R$ {match_de.group(1)}"
             )
 
-            dados_json["preco_atual"] = (
-                match_por.group(1).strip()
+            dados["preco_atual"] = (
+                f"R$ {match_por.group(1)}"
             )
 
 # ========================================================
-# 3. PADRONIZAÇÃO MONETÁRIA
+# 3. GARANTIA DE FORMATO DOS PREÇOS
 # ========================================================
 
-for campo in [
-    "preco_atual",
-    "preco_anterior",
-]:
-    valor = dados_json.get(campo)
+dados["preco_anterior"] = normalizar_preco(
+    dados.get("preco_anterior")
+)
 
-    if (
-        valor is None
-        or str(valor).strip().lower()
-        in [
-            "null",
-            "none",
-            "",
-        ]
-    ):
-        dados_json[campo] = None
-        continue
-
-    valor_str = str(valor)
-
-    valor_str = (
-        valor_str
-        .replace(".00", "")
-        .replace(",00", "")
-    )
-
-    valor_limpo = (
-        valor_str
-        .replace("R$", "")
-        .replace("(", "")
-        .replace(")", "")
-        .strip()
-    )
-
-    match_num = re.search(
-        r"(\d+(?:[\.,]\d+)*)",
-        valor_limpo,
-    )
-
-    if match_num:
-        dados_json[campo] = (
-            f"R$ {match_num.group(1)}"
-        )
-    else:
-        dados_json[campo] = (
-            f"R$ {valor_limpo}"
-        )
+dados["preco_atual"] = normalizar_preco(
+    dados.get("preco_atual")
+)
 
 if (
-    dados_json.get("preco_anterior")
-    == dados_json.get("preco_atual")
+    dados.get("preco_anterior")
+    == dados.get("preco_atual")
 ):
-    dados_json["preco_anterior"] = None
+    dados["preco_anterior"] = None
 
 # ========================================================
-# 4. LIMPEZA DE CUPOM
+# 4. VALIDAÇÃO DO CUPOM
 # ========================================================
 
-cupom_ia = str(
-    dados_json.get("cupom", "") or ""
-).strip()
+cupom_ia = limpar_valor(
+    dados.get("cupom")
+)
 
-if (
-    cupom_ia
-    and cupom_ia.lower()
-    not in ["null", "none"]
-):
+if cupom_ia:
     cupom_limpo = (
         cupom_ia
         .replace("🎟️", "")
@@ -734,30 +653,27 @@ if (
         .strip()
     )
 
-    # Remove possíveis aspas
-    cupom_limpo = (
-        cupom_limpo
-        .strip('"')
-        .strip("'")
-        .strip()
-    )
-
+    # O cupom precisa realmente existir no texto.
     if (
         cupom_limpo.lower()
         not in texto_bruto.lower()
-        or any(
-            cupom_limpo in link
-            for link in links_no_texto
-        )
     ):
-        dados_json["cupom"] = None
+        dados["cupom"] = None
+
+    # Não aceitar link como cupom.
+    elif any(
+        cupom_limpo in link
+        for link in links_no_texto
+    ):
+        dados["cupom"] = None
+
     else:
-        dados_json["cupom"] = cupom_limpo
+        dados["cupom"] = cupom_limpo
 
 else:
-    dados_json["cupom"] = None
+    dados["cupom"] = None
 
-return dados_json
+return dados
 ```
 
 # ============================================================
@@ -794,29 +710,26 @@ if not NINE_ROUTER_API_KEY:
     )
 
 # ========================================================
-# PROMPT ENXUTO
+# PROMPT REDUZIDO
 # ========================================================
 
 prompt_sistema = (
-    "Extraia os dados da oferta e responda em UMA ÚNICA LINHA.\n"
+    "Extraia os dados da oferta. "
+    "Responda somente nesta linha, sem explicações:\n"
     "\n"
-    "Formato EXATO:\n"
     "nome_produto: X, preco_anterior: X, preco_atual: X, "
     "cupom: X, link_cupom: X, link_produto: X\n"
     "\n"
-    "Regras:\n"
-    "- nome_produto: nome comercial completo do produto.\n"
-    "- cupom: somente código escrito no texto. Nunca invente.\n"
-    "- Se não existir, use null.\n"
-    "- Não explique nada.\n"
-    "- Não use markdown.\n"
-    "- Não use JSON.\n"
-    "- Não pense em voz alta.\n"
-    "- Responda somente com a linha solicitada."
+    "Regras: "
+    "nome_produto é o nome comercial completo; "
+    "cupom somente se estiver escrito no texto; "
+    "dados ausentes devem ser null; "
+    "não invente dados."
 )
 
 payload_dados = {
     "model": MODEL_NAME,
+
     "messages": [
         {
             "role": "system",
@@ -824,20 +737,15 @@ payload_dados = {
         },
         {
             "role": "user",
-            "content": (
-                f"Texto da oferta:\n{texto}"
-            ),
+            "content": texto,
         },
     ],
+
     "temperature": 0.0,
     "top_p": 0.1,
 
-    # A resposta esperada possui aproximadamente
-    # 150-250 caracteres.
-    #
-    # 300 tokens já é mais que suficiente e evita
-    # que modelos de reasoning consumam milhares
-    # de tokens.
+    # A resposta tem aproximadamente 160-200 caracteres.
+    # 300 é suficiente para o formato solicitado.
     "max_tokens": 300,
 
     "stream": False,
@@ -866,13 +774,13 @@ try:
 
     response.raise_for_status()
 
-    dados = response.json()
+    dados_resposta = response.json()
 
     # ====================================================
     # MÉTRICAS
     # ====================================================
 
-    usage = dados.get(
+    usage = dados_resposta.get(
         "usage",
         {},
     )
@@ -898,7 +806,9 @@ try:
         .get("cached_tokens")
     )
 
-    cost = dados.get("cost")
+    cost = dados_resposta.get(
+        "cost"
+    )
 
     logger.info(
         "request_id=%s | "
@@ -912,7 +822,7 @@ try:
         "cost=%s",
         request_id,
         duracao_http,
-        dados.get(
+        dados_resposta.get(
             "model",
             MODEL_NAME,
         ),
@@ -924,29 +834,25 @@ try:
     )
 
     # ====================================================
-    # RESPOSTA DA IA
+    # RESPOSTA
     # ====================================================
 
-    choices = dados.get(
+    choices = dados_resposta.get(
         "choices",
-        [],
+        []
     )
 
     if not choices:
         logger.error(
             "request_id=%s | "
-            "9router não retornou choices | "
-            "response=%s",
+            "9router não retornou choices | response=%s",
             request_id,
-            dados,
+            dados_resposta,
         )
 
         raise HTTPException(
             status_code=502,
-            detail=(
-                "O serviço de IA não retornou "
-                "uma resposta válida."
-            ),
+            detail="O serviço de IA não retornou uma resposta válida.",
         )
 
     choice = choices[0]
@@ -980,70 +886,31 @@ try:
     if not resposta_ia:
         logger.error(
             "request_id=%s | "
-            "9router retornou resposta vazia | "
-            "response=%s",
+            "9router retornou resposta vazia | response=%s",
             request_id,
-            dados,
+            dados_resposta,
         )
 
         raise HTTPException(
             status_code=502,
-            detail=(
-                "O serviço de IA não retornou dados."
-            ),
+            detail="O serviço de IA não retornou dados.",
         )
 
     # ====================================================
-    # PARSE DA RESPOSTA SIMPLES
+    # PARSE DO TEXTO
     # ====================================================
 
-    resposta_limpa = limpar_resposta_ia(
+    dados_extraidos = parsear_resposta_ia(
         resposta_ia
     )
-
-    dados_extraidos = parse_resposta_simples(
-        resposta_limpa
-    )
-
-    logger.info(
-        "request_id=%s | "
-        "dados_extraidos=%s",
-        request_id,
-        dados_extraidos,
-    )
-
-    # ====================================================
-    # VALIDAÇÃO DO PRODUTO
-    # ====================================================
-
-    if not dados_extraidos.get(
-        "nome_produto"
-    ):
-        logger.error(
-            "request_id=%s | "
-            "não foi possível extrair nome_produto | "
-            "resposta=%s",
-            request_id,
-            resposta_limpa,
-        )
-
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "Não foi possível identificar "
-                "o produto da oferta."
-            ),
-        )
 
     # ====================================================
     # CORREÇÕES DETERMINÍSTICAS
     # ====================================================
 
-    dados_corrigidos = (
-        organizar_links_e_precos(
-            dados_extraidos,
-            texto,
-        )
+    dados_corrigidos = organizar_links_e_precos(
+        dados_extraidos,
+        texto,
     )
 
     # ====================================================
@@ -1051,10 +918,8 @@ try:
     # ====================================================
 
     try:
-        oferta_validada = (
-            OfertaEstruturada(
-                **dados_corrigidos
-            )
+        oferta_validada = OfertaEstruturada(
+            **dados_corrigidos
         )
 
     except Exception:
@@ -1068,27 +933,20 @@ try:
 
         raise HTTPException(
             status_code=502,
-            detail=(
-                "A resposta da IA não possui "
-                "o formato esperado."
-            ),
+            detail="A resposta da IA não possui o formato esperado.",
         )
 
     return oferta_validada.model_dump()
 
 except httpx.ConnectError:
     logger.exception(
-        "request_id=%s | "
-        "erro de conexão com 9router",
+        "request_id=%s | erro de conexão com 9router",
         request_id,
     )
 
     raise HTTPException(
         status_code=503,
-        detail=(
-            "Serviço de IA temporariamente "
-            "indisponível."
-        ),
+        detail="Serviço de IA temporariamente indisponível.",
     )
 
 except httpx.TimeoutException:
@@ -1107,10 +965,7 @@ except httpx.TimeoutException:
 
     raise HTTPException(
         status_code=504,
-        detail=(
-            "O serviço de IA demorou demais "
-            "para responder."
-        ),
+        detail="O serviço de IA demorou demais para responder.",
     )
 
 except httpx.HTTPStatusError as e:
@@ -1143,9 +998,7 @@ except Exception:
 
     raise HTTPException(
         status_code=500,
-        detail=(
-            "Erro interno ao processar a oferta."
-        ),
+        detail="Erro interno ao processar a oferta.",
     )
 ```
 
@@ -1165,17 +1018,14 @@ uuid.uuid4()
 )
 
 ```
-request.state.request_id = (
-    request_id
-)
+request.state.request_id = request_id
 
 inicio = time.perf_counter()
 
 logger.info(
     "request_id=%s | "
     "method=%s | "
-    "path=%s | "
-    "start",
+    "path=%s | start",
     request_id,
     request.method,
     request.url.path,
@@ -1254,18 +1104,14 @@ async def ready():
 if http_client is None:
 raise HTTPException(
 status_code=503,
-detail=(
-"Cliente HTTP não inicializado."
-),
+detail="Cliente HTTP não inicializado.",
 )
 
 ```
 if not NINE_ROUTER_API_KEY:
     raise HTTPException(
         status_code=503,
-        detail=(
-            "API key do 9router não configurada."
-        ),
+        detail="API key do 9router não configurada.",
     )
 
 try:
@@ -1295,9 +1141,7 @@ except httpx.HTTPError as e:
 
     raise HTTPException(
         status_code=503,
-        detail=(
-            "O serviço de IA não está disponível."
-        ),
+        detail="O serviço de IA não está disponível.",
     )
 ```
 
@@ -1378,8 +1222,6 @@ except Exception:
 
     raise HTTPException(
         status_code=500,
-        detail=(
-            "Erro interno ao processar a oferta."
-        ),
+        detail="Erro interno ao processar a oferta.",
     )
 ```
