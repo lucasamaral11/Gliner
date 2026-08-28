@@ -554,10 +554,7 @@ async def chamar_9router(
         # RESPOSTA DA IA
         # ====================================================
 
-        choices = dados.get(
-            "choices",
-            [],
-        )
+        choices = dados.get("choices", [])
 
         if not choices:
             logger.error(
@@ -568,11 +565,15 @@ async def chamar_9router(
 
             raise HTTPException(
                 status_code=502,
-                detail="O serviço de IA não retornou uma resposta válida.",
+                detail="O serviço de IA não retornou uma resposta válida."
             )
 
+        choice = choices[0]
+
+        finish_reason = choice.get("finish_reason")
+
         resposta_ia = (
-            choices[0]
+            choice
             .get("message", {})
             .get("content", "")
         )
@@ -580,9 +581,16 @@ async def chamar_9router(
         if resposta_ia is None:
             resposta_ia = ""
 
-        resposta_ia = str(
-            resposta_ia
-        ).strip()
+        resposta_ia = str(resposta_ia).strip()
+
+        logger.info(
+            "request_id=%s | "
+            "finish_reason=%s | "
+            "completion_chars=%d",
+            request_id,
+            finish_reason,
+            len(resposta_ia),
+        )
 
         if not resposta_ia:
             logger.error(
