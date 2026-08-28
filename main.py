@@ -1061,4 +1061,3 @@ async def extrair_oferta(
             status_code=500,
             detail="Erro interno ao processar a oferta.",
         )
-````
