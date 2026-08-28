@@ -1122,11 +1122,11 @@ Não invente informações.
 Não inclua preço, cupom ou links no nome.
 
 2. preco_anterior:
-É o preço antigo indicado por "de".
+É o preço antigo, de menor valor ou indicado por "de".
 Se não existir, use null.
 
 3. preco_atual:
-É o preço atual indicado por "por".
+É o preço atual, de maior valor ou indicado por "por".
 Se não existir claramente, use null.
 
 4. cupom:
@@ -1134,7 +1134,7 @@ Somente informe um código de cupom se o código estiver escrito explicitamente 
 Nunca invente cupom.
 
 5. link_cupom:
-Somente informe um link quando o texto indicar que aquele link é para cupom, resgate ou coleta de cupom.
+Somente informe um link quando o texto indicar que aquele link é para cupom, resgate ou coleta de cupom, ele é diferente do link_produto.
 Caso contrário, use null.
 
 6. link_produto:
