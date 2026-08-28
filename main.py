@@ -471,7 +471,7 @@ async def chamar_9router(
         ],
         "temperature": 0.0,
         "top_p": 0.1,
-        "max_tokens": 500,
+        "max_tokens": 5000,
         "stream": False,
     }
 
