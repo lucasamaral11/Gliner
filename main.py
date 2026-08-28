@@ -1,3 +1,4 @@
+````python
 import json
 import logging
 import os
@@ -121,7 +122,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Gliner Offer Extraction API",
-    version="1.4.0",
+    version="1.5.0",
     lifespan=lifespan,
 )
 
@@ -216,26 +217,201 @@ def normalizar_preco(valor):
     return f"R$ {valor_str}"
 
 
+def limpar_string_extraida(valor):
+    if valor is None:
+        return None
+
+    valor = str(valor).strip()
+
+    valor = valor.strip()
+
+    # Remove vírgulas finais
+    valor = valor.rstrip(",")
+
+    # Remove aspas externas
+    if len(valor) >= 2:
+        if (
+            valor.startswith('"')
+            and valor.endswith('"')
+        ):
+            valor = valor[1:-1]
+
+        elif (
+            valor.startswith("'")
+            and valor.endswith("'")
+        ):
+            valor = valor[1:-1]
+
+    return valor.strip()
+
+
 # ============================================================
-# EXTRAÇÃO DE RESPOSTA IMPERFEITA DA IA
+# JSON ROBUSTO
+# ============================================================
+
+def extrair_objeto_json_balanceado(texto: str):
+    """
+    Procura um objeto JSON real dentro da resposta,
+    respeitando chaves dentro de strings.
+    """
+
+    if not texto:
+        return None
+
+    inicio = texto.find("{")
+
+    if inicio == -1:
+        return None
+
+    profundidade = 0
+    dentro_string = False
+    escape = False
+
+    for i in range(inicio, len(texto)):
+        char = texto[i]
+
+        if dentro_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                dentro_string = False
+
+            continue
+
+        if char == '"':
+            dentro_string = True
+
+        elif char == "{":
+            profundidade += 1
+
+        elif char == "}":
+            profundidade -= 1
+
+            if profundidade == 0:
+                trecho = texto[inicio:i + 1]
+
+                try:
+                    return json.loads(trecho)
+                except json.JSONDecodeError:
+                    return None
+
+    return None
+
+
+def corrigir_json_fragmentado(texto: str):
+    """
+    Corrige respostas comuns de modelos que removem
+    a primeira chave/abrechave ou devolvem JSON incompleto.
+
+    Exemplo:
+
+    _produto":"TV","preco_atual":"R$ 100"
+
+    vira:
+
+    {
+      "nome_produto":"TV",
+      "preco_atual":"R$ 100"
+    }
+    """
+
+    if not texto:
+        return None
+
+    texto = texto.strip()
+
+    # Remove markdown
+    texto = re.sub(
+        r"```(?:json)?",
+        "",
+        texto,
+        flags=re.IGNORECASE,
+    )
+
+    texto = texto.replace(
+        "```",
+        "",
+    ).strip()
+
+    # --------------------------------------------------------
+    # Caso especial:
+    #
+    # _produto":"..."
+    # produto":"..."
+    # nome_produto":"..."
+    #
+    # --------------------------------------------------------
+
+    if re.match(
+        r'^_?produto"\s*:',
+        texto,
+        flags=re.IGNORECASE,
+    ):
+        texto = (
+            '{"nome_produto":'
+            + re.sub(
+                r'^_?produto"\s*:',
+                "",
+                texto,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    elif re.match(
+        r'^_?produto\s*"\s*:',
+        texto,
+        flags=re.IGNORECASE,
+    ):
+        texto = (
+            '{"nome_produto":'
+            + re.sub(
+                r'^_?produto\s*"\s*:',
+                "",
+                texto,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    # --------------------------------------------------------
+    # Tenta adicionar fechamento
+    # --------------------------------------------------------
+
+    texto = texto.strip()
+
+    if (
+        texto.startswith("{")
+        and not texto.endswith("}")
+    ):
+        texto += "}"
+
+    try:
+        resultado = json.loads(texto)
+
+        if isinstance(resultado, dict):
+            return resultado
+
+    except json.JSONDecodeError:
+        pass
+
+    return None
+
+
+# ============================================================
+# EXTRAÇÃO DE JSON
 # ============================================================
 
 def extrair_json_da_resposta(resposta: str):
-    """
-    Tenta interpretar a resposta da IA mesmo quando ela:
-    - retorna JSON puro;
-    - usa ```json;
-    - coloca texto antes/depois do JSON;
-    - retorna objeto em uma única linha.
-    """
-
     if not resposta:
         return None
 
     texto = resposta.strip()
 
     # --------------------------------------------------------
-    # 1. Remove markdown
+    # Remove markdown
     # --------------------------------------------------------
 
     texto = re.sub(
@@ -255,43 +431,45 @@ def extrair_json_da_resposta(resposta: str):
     texto = texto.strip()
 
     # --------------------------------------------------------
-    # 2. JSON puro
+    # 1. JSON puro
     # --------------------------------------------------------
 
     try:
-        return json.loads(texto)
+        resultado = json.loads(texto)
+
+        if isinstance(resultado, dict):
+            return resultado
 
     except json.JSONDecodeError:
         pass
 
     # --------------------------------------------------------
-    # 3. Tenta localizar objeto JSON dentro da resposta
+    # 2. Objeto balanceado
     # --------------------------------------------------------
 
-    inicio = texto.find("{")
-    fim = texto.rfind("}")
+    resultado = extrair_objeto_json_balanceado(
+        texto
+    )
 
-    if inicio != -1 and fim > inicio:
-        trecho_json = texto[inicio:fim + 1]
+    if isinstance(resultado, dict):
+        return resultado
 
-        try:
-            return json.loads(trecho_json)
+    # --------------------------------------------------------
+    # 3. JSON fragmentado
+    # --------------------------------------------------------
 
-        except json.JSONDecodeError:
-            pass
+    resultado = corrigir_json_fragmentado(
+        texto
+    )
+
+    if isinstance(resultado, dict):
+        return resultado
 
     return None
 
 
 # ============================================================
-# FALLBACK PARA RESPOSTA NO FORMATO:
-#
-# _produto: ...
-# preco_anterior: ...
-# preco_atual: ...
-# cupom: ...
-# link_cupom: ...
-# link_produto: ...
+# PARSER CHAVE / VALOR
 # ============================================================
 
 def extrair_formato_chave_valor(resposta: str):
@@ -300,10 +478,6 @@ def extrair_formato_chave_valor(resposta: str):
 
     texto = resposta.strip()
 
-    # --------------------------------------------------------
-    # Remove markdown
-    # --------------------------------------------------------
-
     texto = re.sub(
         r"```(?:json)?",
         "",
@@ -311,129 +485,173 @@ def extrair_formato_chave_valor(resposta: str):
         flags=re.IGNORECASE,
     )
 
-    texto = texto.replace("```", "").strip()
+    texto = texto.replace(
+        "```",
+        "",
+    ).strip()
 
     # --------------------------------------------------------
-    # Aceita:
-    #
-    # _produto:
-    # nome_produto:
-    # produto:
+    # Função interna para localizar valor de uma chave
     # --------------------------------------------------------
 
-    padrao_produto = re.search(
-        r"(?:^|[,{\n])\s*"
-        r"(?:_?produto|nome_produto)"
-        r"\s*:\s*"
-        r"(.+?)"
-        r"(?=\s*,\s*(?:preco_anterior|preco_atual|cupom|link_cupom|link_produto)\s*:|\s*$)",
-        texto,
-        flags=re.IGNORECASE | re.DOTALL,
+    def extrair_campo(chaves, chaves_seguinte):
+        nomes = "|".join(
+            re.escape(chave)
+            for chave in chaves
+        )
+
+        seguintes = "|".join(
+            re.escape(chave)
+            for chave in chaves_seguinte
+        )
+
+        padrao = (
+            r"(?:^|[,{\n])\s*"
+            r"(?:"
+            + nomes
+            + r")"
+            r'\s*(?:"|)?\s*:\s*'
+            r"(.+?)"
+            r"(?=\s*,\s*(?:"
+            + seguintes
+            + r')\s*(?:"|)?\s*:|\s*$)'
+        )
+
+        match = re.search(
+            padrao,
+            texto,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        if not match:
+            return None
+
+        return limpar_string_extraida(
+            match.group(1)
+        )
+
+    # --------------------------------------------------------
+    # Produto
+    # --------------------------------------------------------
+
+    nome_produto = extrair_campo(
+        [
+            "_produto",
+            "produto",
+            "nome_produto",
+            '"_produto"',
+            '"produto"',
+            '"nome_produto"',
+        ],
+        [
+            "preco_anterior",
+            "preco_atual",
+            "cupom",
+            "link_cupom",
+            "link_produto",
+        ],
     )
 
-    padrao_preco_anterior = re.search(
-        r"(?:^|[,{\n])\s*"
-        r"preco_anterior"
-        r"\s*:\s*"
-        r"(.+?)"
-        r"(?=\s*,\s*(?:preco_atual|cupom|link_cupom|link_produto)\s*:|\s*$)",
-        texto,
-        flags=re.IGNORECASE | re.DOTALL,
+    # --------------------------------------------------------
+    # Preço anterior
+    # --------------------------------------------------------
+
+    preco_anterior = extrair_campo(
+        [
+            "preco_anterior",
+            '"preco_anterior"',
+        ],
+        [
+            "preco_atual",
+            "cupom",
+            "link_cupom",
+            "link_produto",
+        ],
     )
 
-    padrao_preco_atual = re.search(
-        r"(?:^|[,{\n])\s*"
-        r"preco_atual"
-        r"\s*:\s*"
-        r"(.+?)"
-        r"(?=\s*,\s*(?:cupom|link_cupom|link_produto)\s*:|\s*$)",
-        texto,
-        flags=re.IGNORECASE | re.DOTALL,
+    # --------------------------------------------------------
+    # Preço atual
+    # --------------------------------------------------------
+
+    preco_atual = extrair_campo(
+        [
+            "preco_atual",
+            '"preco_atual"',
+        ],
+        [
+            "cupom",
+            "link_cupom",
+            "link_produto",
+        ],
     )
 
-    padrao_cupom = re.search(
-        r"(?:^|[,{\n])\s*"
-        r"cupom"
-        r"\s*:\s*"
-        r"(.+?)"
-        r"(?=\s*,\s*(?:link_cupom|link_produto)\s*:|\s*$)",
-        texto,
-        flags=re.IGNORECASE | re.DOTALL,
+    # --------------------------------------------------------
+    # Cupom
+    # --------------------------------------------------------
+
+    cupom = extrair_campo(
+        [
+            "cupom",
+            '"cupom"',
+        ],
+        [
+            "link_cupom",
+            "link_produto",
+        ],
     )
 
-    padrao_link_cupom = re.search(
-        r"(?:^|[,{\n])\s*"
-        r"link_cupom"
-        r"\s*:\s*"
-        r"(https?://\S+|null|none)",
-        texto,
-        flags=re.IGNORECASE,
+    # --------------------------------------------------------
+    # Link cupom
+    # --------------------------------------------------------
+
+    link_cupom = extrair_campo(
+        [
+            "link_cupom",
+            '"link_cupom"',
+        ],
+        [
+            "link_produto",
+        ],
     )
 
-    padrao_link_produto = re.search(
-        r"(?:^|[,{\n])\s*"
-        r"link_produto"
-        r"\s*:\s*"
-        r"(https?://\S+|null|none)",
-        texto,
-        flags=re.IGNORECASE,
+    # --------------------------------------------------------
+    # Link produto
+    # --------------------------------------------------------
+
+    link_produto = extrair_campo(
+        [
+            "link_produto",
+            '"link_produto"',
+        ],
+        [],
     )
 
-    if not padrao_produto:
+    if not nome_produto:
         return None
 
-    resultado = {
-        "nome_produto": padrao_produto.group(1).strip(),
-        "preco_anterior": (
-            padrao_preco_anterior.group(1).strip()
-            if padrao_preco_anterior
-            else None
+    return {
+        "nome_produto": nome_produto,
+        "preco_anterior": preco_anterior,
+        "preco_atual": preco_atual,
+        "cupom": cupom,
+        "link_cupom": limpar_valor_nulo(
+            link_cupom
         ),
-        "preco_atual": (
-            padrao_preco_atual.group(1).strip()
-            if padrao_preco_atual
-            else None
-        ),
-        "cupom": (
-            padrao_cupom.group(1).strip()
-            if padrao_cupom
-            else None
-        ),
-        "link_cupom": (
-            padrao_link_cupom.group(1).strip()
-            if padrao_link_cupom
-            else None
-        ),
-        "link_produto": (
-            padrao_link_produto.group(1).strip()
-            if padrao_link_produto
-            else None
+        "link_produto": limpar_valor_nulo(
+            link_produto
         ),
     }
 
-    # --------------------------------------------------------
-    # Limpeza de aspas
-    # --------------------------------------------------------
-
-    for chave, valor in resultado.items():
-        if isinstance(valor, str):
-            resultado[chave] = (
-                valor
-                .strip()
-                .strip('"')
-                .strip("'")
-                .strip()
-            )
-
-    return resultado
-
 
 # ============================================================
-# PARSER PRINCIPAL DA RESPOSTA
+# PARSER PRINCIPAL
 # ============================================================
 
 def interpretar_resposta_ia(resposta: str):
-    # Primeiro tenta JSON verdadeiro
+    # --------------------------------------------------------
+    # 1. JSON normal
+    # --------------------------------------------------------
+
     dados_json = extrair_json_da_resposta(
         resposta
     )
@@ -441,7 +659,10 @@ def interpretar_resposta_ia(resposta: str):
     if isinstance(dados_json, dict):
         return dados_json
 
-    # Depois tenta formato chave: valor
+    # --------------------------------------------------------
+    # 2. Chave/valor
+    # --------------------------------------------------------
+
     dados_fallback = extrair_formato_chave_valor(
         resposta
     )
@@ -475,7 +696,7 @@ def organizar_links_e_precos(
     ]
 
     # ========================================================
-    # 1. FILTRO POR LISTA BRANCA DE LOJAS
+    # LINKS
     # ========================================================
 
     links_no_texto = re.findall(
@@ -513,6 +734,7 @@ def organizar_links_e_precos(
     link_cupom_detectado = None
 
     for linha in linhas:
+
         links_na_linha = re.findall(
             r"https?://[^\s<>\"']+",
             linha,
@@ -588,9 +810,9 @@ def organizar_links_e_precos(
     ):
         link_cupom_detectado = None
 
-    # --------------------------------------------------------
-    # Link do produto
-    # --------------------------------------------------------
+    # ========================================================
+    # LINK PRODUTO
+    # ========================================================
 
     dados_json["link_produto"] = (
         str(link_produto_detectado)
@@ -600,9 +822,9 @@ def organizar_links_e_precos(
         )
     )
 
-    # --------------------------------------------------------
-    # Link do cupom
-    # --------------------------------------------------------
+    # ========================================================
+    # LINK CUPOM
+    # ========================================================
 
     dados_json["link_cupom"] = (
         str(link_cupom_detectado)
@@ -613,7 +835,7 @@ def organizar_links_e_precos(
     )
 
     # ========================================================
-    # 2. VALIDAÇÃO HÍBRIDA DE PREÇOS
+    # PREÇOS
     # ========================================================
 
     match_linha_precos = re.search(
@@ -626,6 +848,7 @@ def organizar_links_e_precos(
     )
 
     if match_linha_precos:
+
         dados_json["preco_anterior"] = (
             match_linha_precos.group(1).strip()
         )
@@ -635,10 +858,12 @@ def organizar_links_e_precos(
         )
 
     else:
+
         linha_de = None
         linha_por = None
 
         for linha in linhas:
+
             if re.search(
                 r"\bde\b\s*:?\s*r?\$?\s*\d+",
                 linha,
@@ -654,6 +879,7 @@ def organizar_links_e_precos(
                 linha_por = linha
 
         if linha_de and linha_por:
+
             match_de = re.search(
                 r"(\d+(?:[\.,]\d+)*)",
                 linha_de,
@@ -665,6 +891,7 @@ def organizar_links_e_precos(
             )
 
             if match_de and match_por:
+
                 dados_json["preco_anterior"] = (
                     match_de.group(1).strip()
                 )
@@ -674,7 +901,7 @@ def organizar_links_e_precos(
                 )
 
     # ========================================================
-    # 3. PADRONIZAÇÃO MONETÁRIA
+    # PADRONIZAÇÃO
     # ========================================================
 
     dados_json["preco_atual"] = normalizar_preco(
@@ -685,10 +912,6 @@ def organizar_links_e_precos(
         dados_json.get("preco_anterior")
     )
 
-    # --------------------------------------------------------
-    # Se os dois preços forem iguais, remove anterior
-    # --------------------------------------------------------
-
     if (
         dados_json.get("preco_anterior")
         == dados_json.get("preco_atual")
@@ -696,7 +919,7 @@ def organizar_links_e_precos(
         dados_json["preco_anterior"] = None
 
     # ========================================================
-    # 4. CUPOM
+    # CUPOM
     # ========================================================
 
     cupom_ia = limpar_valor_nulo(
@@ -704,6 +927,7 @@ def organizar_links_e_precos(
     )
 
     if cupom_ia:
+
         cupom_limpo = (
             cupom_ia
             .replace("🎟️", "")
@@ -711,16 +935,11 @@ def organizar_links_e_precos(
             .strip()
         )
 
-        # ----------------------------------------------------
-        # O cupom precisa existir literalmente no texto.
-        # ----------------------------------------------------
-
         if (
             cupom_limpo.lower()
             not in texto_bruto.lower()
         ):
             dados_json["cupom"] = None
-
         else:
             dados_json["cupom"] = cupom_limpo
 
@@ -728,7 +947,7 @@ def organizar_links_e_precos(
         dados_json["cupom"] = None
 
     # ========================================================
-    # 5. NOME DO PRODUTO
+    # NOME
     # ========================================================
 
     nome_produto = limpar_valor_nulo(
@@ -736,8 +955,13 @@ def organizar_links_e_precos(
     )
 
     if nome_produto:
+
         dados_json["nome_produto"] = (
-            nome_produto.strip()
+            nome_produto
+            .strip()
+            .strip('"')
+            .strip("'")
+            .strip()
         )
 
     return dados_json
@@ -751,6 +975,7 @@ async def chamar_9router(
     texto: str,
     request_id: str,
 ):
+
     if http_client is None:
         logger.error(
             "request_id=%s | http_client não inicializado",
@@ -893,6 +1118,7 @@ A resposta deve ser um ÚNICO objeto JSON válido.
     inicio_ia = time.perf_counter()
 
     try:
+
         response = await http_client.post(
             f"{NINE_ROUTER_BASE_URL}/chat/completions",
             json=payload_dados,
@@ -961,7 +1187,7 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         )
 
         # ====================================================
-        # RESPOSTA DA IA
+        # CHOICES
         # ====================================================
 
         choices = dados.get(
@@ -970,6 +1196,7 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         )
 
         if not choices:
+
             logger.error(
                 "request_id=%s | "
                 "9router não retornou choices | "
@@ -992,11 +1219,19 @@ A resposta deve ser um ÚNICO objeto JSON válido.
             "finish_reason"
         )
 
-        resposta_ia = (
-            choice
-            .get("message", {})
-            .get("content", "")
+        message = choice.get(
+            "message",
+            {},
         )
+
+        resposta_ia = message.get(
+            "content",
+            "",
+        )
+
+        # ====================================================
+        # ALGUNS MODELOS PODEM RETORNAR CONTENT NONE
+        # ====================================================
 
         if resposta_ia is None:
             resposta_ia = ""
@@ -1014,11 +1249,48 @@ A resposta deve ser um ÚNICO objeto JSON válido.
             len(resposta_ia),
         )
 
-        if not resposta_ia:
+        # ====================================================
+        # MODELOS DE SAFETY / RESPOSTAS NÃO UTILIZÁVEIS
+        # ====================================================
+
+        respostas_invalidas = {
+            "user safety: safe",
+            "safe",
+            "unsafe",
+            "blocked",
+            "content blocked",
+        }
+
+        if resposta_ia.lower() in respostas_invalidas:
+
             logger.error(
                 "request_id=%s | "
-                "9router retornou resposta vazia",
+                "modelo retornou resposta de safety "
+                "em vez da extração | resposta=%s | model=%s",
                 request_id,
+                resposta_ia,
+                dados.get(
+                    "model",
+                    MODEL_NAME,
+                ),
+            )
+
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "O modelo selecionado não retornou "
+                    "os dados da oferta."
+                ),
+            )
+
+        if not resposta_ia:
+
+            logger.error(
+                "request_id=%s | "
+                "9router retornou resposta vazia | "
+                "finish_reason=%s",
+                request_id,
+                finish_reason,
             )
 
             raise HTTPException(
@@ -1040,6 +1312,7 @@ A resposta deve ser um ÚNICO objeto JSON válido.
             json_puro,
             dict,
         ):
+
             logger.error(
                 "request_id=%s | "
                 "não foi possível interpretar resposta da IA | "
@@ -1070,11 +1343,13 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         # ====================================================
 
         try:
+
             oferta_validada = OfertaEstruturada(
                 **json_corrigido
             )
 
         except Exception:
+
             logger.error(
                 "request_id=%s | "
                 "resposta não passou na validação | "
@@ -1092,7 +1367,7 @@ A resposta deve ser um ÚNICO objeto JSON válido.
             )
 
         # ====================================================
-        # LOG FINAL DA EXTRAÇÃO
+        # LOG FINAL
         # ====================================================
 
         logger.info(
@@ -1114,6 +1389,7 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         return oferta_validada.model_dump()
 
     except httpx.ConnectError:
+
         logger.exception(
             "request_id=%s | "
             "erro de conexão com 9router",
@@ -1129,6 +1405,7 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         )
 
     except httpx.TimeoutException:
+
         duracao_ia = (
             time.perf_counter()
             - inicio_ia
@@ -1151,6 +1428,7 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         )
 
     except httpx.HTTPStatusError as e:
+
         logger.exception(
             "request_id=%s | "
             "9router HTTP %s | "
@@ -1172,6 +1450,7 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         raise
 
     except Exception:
+
         logger.exception(
             "request_id=%s | "
             "erro inesperado no 9router",
@@ -1195,6 +1474,7 @@ async def request_logging_middleware(
     request: Request,
     call_next,
 ):
+
     request_id = str(
         uuid.uuid4()
     )
@@ -1213,11 +1493,13 @@ async def request_logging_middleware(
     )
 
     try:
+
         response = await call_next(
             request
         )
 
     except Exception:
+
         duracao = (
             time.perf_counter()
             - inicio
@@ -1279,6 +1561,7 @@ async def health():
 
 @app.get("/ready")
 async def ready():
+
     if http_client is None:
         raise HTTPException(
             status_code=503,
@@ -1312,6 +1595,7 @@ async def ready():
         )
 
     try:
+
         response = await http_client.get(
             f"{NINE_ROUTER_BASE_URL}/models",
             headers={
@@ -1331,6 +1615,7 @@ async def ready():
         }
 
     except httpx.HTTPError as e:
+
         logger.exception(
             "9router não está disponível: %s",
             str(e),
@@ -1353,6 +1638,7 @@ async def extrair_oferta(
     payload: TextoPayload,
     request: Request,
 ):
+
     request_id = request.state.request_id
 
     inicio = time.perf_counter()
@@ -1366,6 +1652,7 @@ async def extrair_oferta(
     )
 
     try:
+
         resultado = await chamar_9router(
             payload.texto,
             request_id,
@@ -1387,6 +1674,7 @@ async def extrair_oferta(
         return resultado
 
     except HTTPException:
+
         duracao = (
             time.perf_counter()
             - inicio
@@ -1403,6 +1691,7 @@ async def extrair_oferta(
         raise
 
     except Exception:
+
         duracao = (
             time.perf_counter()
             - inicio
@@ -1422,3 +1711,4 @@ async def extrair_oferta(
                 "Erro interno ao processar a oferta."
             ),
         )
+````
