@@ -1,4 +1,3 @@
-````python
 import json
 import logging
 import os
@@ -223,12 +222,8 @@ def limpar_string_extraida(valor):
 
     valor = str(valor).strip()
 
-    valor = valor.strip()
-
-    # Remove vírgulas finais
     valor = valor.rstrip(",")
 
-    # Remove aspas externas
     if len(valor) >= 2:
         if (
             valor.startswith('"')
@@ -322,7 +317,6 @@ def corrigir_json_fragmentado(texto: str):
 
     texto = texto.strip()
 
-    # Remove markdown
     texto = re.sub(
         r"```(?:json)?",
         "",
@@ -334,15 +328,6 @@ def corrigir_json_fragmentado(texto: str):
         "```",
         "",
     ).strip()
-
-    # --------------------------------------------------------
-    # Caso especial:
-    #
-    # _produto":"..."
-    # produto":"..."
-    # nome_produto":"..."
-    #
-    # --------------------------------------------------------
 
     if re.match(
         r'^_?produto"\s*:',
@@ -376,10 +361,6 @@ def corrigir_json_fragmentado(texto: str):
             )
         )
 
-    # --------------------------------------------------------
-    # Tenta adicionar fechamento
-    # --------------------------------------------------------
-
     texto = texto.strip()
 
     if (
@@ -410,10 +391,6 @@ def extrair_json_da_resposta(resposta: str):
 
     texto = resposta.strip()
 
-    # --------------------------------------------------------
-    # Remove markdown
-    # --------------------------------------------------------
-
     texto = re.sub(
         r"^```(?:json)?\s*",
         "",
@@ -430,10 +407,6 @@ def extrair_json_da_resposta(resposta: str):
 
     texto = texto.strip()
 
-    # --------------------------------------------------------
-    # 1. JSON puro
-    # --------------------------------------------------------
-
     try:
         resultado = json.loads(texto)
 
@@ -443,20 +416,12 @@ def extrair_json_da_resposta(resposta: str):
     except json.JSONDecodeError:
         pass
 
-    # --------------------------------------------------------
-    # 2. Objeto balanceado
-    # --------------------------------------------------------
-
     resultado = extrair_objeto_json_balanceado(
         texto
     )
 
     if isinstance(resultado, dict):
         return resultado
-
-    # --------------------------------------------------------
-    # 3. JSON fragmentado
-    # --------------------------------------------------------
 
     resultado = corrigir_json_fragmentado(
         texto
@@ -489,10 +454,6 @@ def extrair_formato_chave_valor(resposta: str):
         "```",
         "",
     ).strip()
-
-    # --------------------------------------------------------
-    # Função interna para localizar valor de uma chave
-    # --------------------------------------------------------
 
     def extrair_campo(chaves, chaves_seguinte):
         nomes = "|".join(
@@ -530,10 +491,6 @@ def extrair_formato_chave_valor(resposta: str):
             match.group(1)
         )
 
-    # --------------------------------------------------------
-    # Produto
-    # --------------------------------------------------------
-
     nome_produto = extrair_campo(
         [
             "_produto",
@@ -552,10 +509,6 @@ def extrair_formato_chave_valor(resposta: str):
         ],
     )
 
-    # --------------------------------------------------------
-    # Preço anterior
-    # --------------------------------------------------------
-
     preco_anterior = extrair_campo(
         [
             "preco_anterior",
@@ -569,10 +522,6 @@ def extrair_formato_chave_valor(resposta: str):
         ],
     )
 
-    # --------------------------------------------------------
-    # Preço atual
-    # --------------------------------------------------------
-
     preco_atual = extrair_campo(
         [
             "preco_atual",
@@ -585,10 +534,6 @@ def extrair_formato_chave_valor(resposta: str):
         ],
     )
 
-    # --------------------------------------------------------
-    # Cupom
-    # --------------------------------------------------------
-
     cupom = extrair_campo(
         [
             "cupom",
@@ -600,10 +545,6 @@ def extrair_formato_chave_valor(resposta: str):
         ],
     )
 
-    # --------------------------------------------------------
-    # Link cupom
-    # --------------------------------------------------------
-
     link_cupom = extrair_campo(
         [
             "link_cupom",
@@ -613,10 +554,6 @@ def extrair_formato_chave_valor(resposta: str):
             "link_produto",
         ],
     )
-
-    # --------------------------------------------------------
-    # Link produto
-    # --------------------------------------------------------
 
     link_produto = extrair_campo(
         [
@@ -648,20 +585,12 @@ def extrair_formato_chave_valor(resposta: str):
 # ============================================================
 
 def interpretar_resposta_ia(resposta: str):
-    # --------------------------------------------------------
-    # 1. JSON normal
-    # --------------------------------------------------------
-
     dados_json = extrair_json_da_resposta(
         resposta
     )
 
     if isinstance(dados_json, dict):
         return dados_json
-
-    # --------------------------------------------------------
-    # 2. Chave/valor
-    # --------------------------------------------------------
 
     dados_fallback = extrair_formato_chave_valor(
         resposta
@@ -734,7 +663,6 @@ def organizar_links_e_precos(
     link_cupom_detectado = None
 
     for linha in linhas:
-
         links_na_linha = re.findall(
             r"https?://[^\s<>\"']+",
             linha,
@@ -848,7 +776,6 @@ def organizar_links_e_precos(
     )
 
     if match_linha_precos:
-
         dados_json["preco_anterior"] = (
             match_linha_precos.group(1).strip()
         )
@@ -858,12 +785,10 @@ def organizar_links_e_precos(
         )
 
     else:
-
         linha_de = None
         linha_por = None
 
         for linha in linhas:
-
             if re.search(
                 r"\bde\b\s*:?\s*r?\$?\s*\d+",
                 linha,
@@ -879,7 +804,6 @@ def organizar_links_e_precos(
                 linha_por = linha
 
         if linha_de and linha_por:
-
             match_de = re.search(
                 r"(\d+(?:[\.,]\d+)*)",
                 linha_de,
@@ -891,7 +815,6 @@ def organizar_links_e_precos(
             )
 
             if match_de and match_por:
-
                 dados_json["preco_anterior"] = (
                     match_de.group(1).strip()
                 )
@@ -927,7 +850,6 @@ def organizar_links_e_precos(
     )
 
     if cupom_ia:
-
         cupom_limpo = (
             cupom_ia
             .replace("🎟️", "")
@@ -955,7 +877,6 @@ def organizar_links_e_precos(
     )
 
     if nome_produto:
-
         dados_json["nome_produto"] = (
             nome_produto
             .strip()
@@ -975,7 +896,6 @@ async def chamar_9router(
     texto: str,
     request_id: str,
 ):
-
     if http_client is None:
         logger.error(
             "request_id=%s | http_client não inicializado",
@@ -1118,7 +1038,6 @@ A resposta deve ser um ÚNICO objeto JSON válido.
     inicio_ia = time.perf_counter()
 
     try:
-
         response = await http_client.post(
             f"{NINE_ROUTER_BASE_URL}/chat/completions",
             json=payload_dados,
@@ -1196,7 +1115,6 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         )
 
         if not choices:
-
             logger.error(
                 "request_id=%s | "
                 "9router não retornou choices | "
@@ -1262,7 +1180,6 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         }
 
         if resposta_ia.lower() in respostas_invalidas:
-
             logger.error(
                 "request_id=%s | "
                 "modelo retornou resposta de safety "
@@ -1284,7 +1201,6 @@ A resposta deve ser um ÚNICO objeto JSON válido.
             )
 
         if not resposta_ia:
-
             logger.error(
                 "request_id=%s | "
                 "9router retornou resposta vazia | "
@@ -1312,7 +1228,6 @@ A resposta deve ser um ÚNICO objeto JSON válido.
             json_puro,
             dict,
         ):
-
             logger.error(
                 "request_id=%s | "
                 "não foi possível interpretar resposta da IA | "
@@ -1343,13 +1258,11 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         # ====================================================
 
         try:
-
             oferta_validada = OfertaEstruturada(
                 **json_corrigido
             )
 
         except Exception:
-
             logger.error(
                 "request_id=%s | "
                 "resposta não passou na validação | "
@@ -1389,7 +1302,6 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         return oferta_validada.model_dump()
 
     except httpx.ConnectError:
-
         logger.exception(
             "request_id=%s | "
             "erro de conexão com 9router",
@@ -1405,7 +1317,6 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         )
 
     except httpx.TimeoutException:
-
         duracao_ia = (
             time.perf_counter()
             - inicio_ia
@@ -1428,7 +1339,6 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         )
 
     except httpx.HTTPStatusError as e:
-
         logger.exception(
             "request_id=%s | "
             "9router HTTP %s | "
@@ -1450,7 +1360,6 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         raise
 
     except Exception:
-
         logger.exception(
             "request_id=%s | "
             "erro inesperado no 9router",
@@ -1474,7 +1383,6 @@ async def request_logging_middleware(
     request: Request,
     call_next,
 ):
-
     request_id = str(
         uuid.uuid4()
     )
@@ -1493,13 +1401,11 @@ async def request_logging_middleware(
     )
 
     try:
-
         response = await call_next(
             request
         )
 
     except Exception:
-
         duracao = (
             time.perf_counter()
             - inicio
@@ -1561,7 +1467,6 @@ async def health():
 
 @app.get("/ready")
 async def ready():
-
     if http_client is None:
         raise HTTPException(
             status_code=503,
@@ -1595,7 +1500,6 @@ async def ready():
         )
 
     try:
-
         response = await http_client.get(
             f"{NINE_ROUTER_BASE_URL}/models",
             headers={
@@ -1615,7 +1519,6 @@ async def ready():
         }
 
     except httpx.HTTPError as e:
-
         logger.exception(
             "9router não está disponível: %s",
             str(e),
@@ -1638,7 +1541,6 @@ async def extrair_oferta(
     payload: TextoPayload,
     request: Request,
 ):
-
     request_id = request.state.request_id
 
     inicio = time.perf_counter()
@@ -1652,7 +1554,6 @@ async def extrair_oferta(
     )
 
     try:
-
         resultado = await chamar_9router(
             payload.texto,
             request_id,
@@ -1674,7 +1575,6 @@ async def extrair_oferta(
         return resultado
 
     except HTTPException:
-
         duracao = (
             time.perf_counter()
             - inicio
@@ -1691,7 +1591,6 @@ async def extrair_oferta(
         raise
 
     except Exception:
-
         duracao = (
             time.perf_counter()
             - inicio
@@ -1711,4 +1610,3 @@ async def extrair_oferta(
                 "Erro interno ao processar a oferta."
             ),
         )
-````
