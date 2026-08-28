@@ -1,3 +1,4 @@
+````python
 import json
 import logging
 import os
@@ -408,6 +409,119 @@ def organizar_links_e_precos(
 
 
 # ============================================================
+# PARSER DA RESPOSTA DA IA
+# ============================================================
+
+def parsear_resposta_ia(
+    resposta: str,
+    request_id: str,
+):
+    """
+    Converte a resposta textual da IA:
+
+    nome_produto: ...
+    preco_anterior: ...
+    preco_atual: ...
+    cupom: ...
+    link_cupom: ...
+    link_produto: ...
+
+    em um dicionário.
+    """
+
+    resposta = resposta.strip()
+
+    # Remove eventuais blocos de markdown
+    resposta = re.sub(
+        r"```(?:text|txt)?\s*|\s*```",
+        "",
+        resposta,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    dados = {
+        "nome_produto": None,
+        "preco_anterior": None,
+        "preco_atual": None,
+        "cupom": None,
+        "link_cupom": None,
+        "link_produto": None,
+    }
+
+    # --------------------------------------------------------
+    # Localiza cada campo até o próximo campo
+    # --------------------------------------------------------
+
+    padroes = {
+        "nome_produto": r"nome_produto\s*:\s*(.*?)(?=\s*,?\s*preco_anterior\s*:|$)",
+        "preco_anterior": r"preco_anterior\s*:\s*(.*?)(?=\s*,?\s*preco_atual\s*:|$)",
+        "preco_atual": r"preco_atual\s*:\s*(.*?)(?=\s*,?\s*cupom\s*:|$)",
+        "cupom": r"cupom\s*:\s*(.*?)(?=\s*,?\s*link_cupom\s*:|$)",
+        "link_cupom": r"link_cupom\s*:\s*(.*?)(?=\s*,?\s*link_produto\s*:|$)",
+        "link_produto": r"link_produto\s*:\s*(.*?)$",
+    }
+
+    for campo, padrao in padroes.items():
+        match = re.search(
+            padrao,
+            resposta,
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        if match:
+            valor = match.group(1).strip()
+
+            # Remove vírgula final
+            valor = valor.rstrip(",").strip()
+
+            # Trata null/none/vazio
+            if valor.lower() in [
+                "",
+                "null",
+                "none",
+                "não informado",
+                "nao informado",
+            ]:
+                valor = None
+
+            dados[campo] = valor
+
+    # --------------------------------------------------------
+    # Verificação mínima
+    # --------------------------------------------------------
+
+    if not dados["nome_produto"]:
+        logger.error(
+            "request_id=%s | "
+            "não foi possível extrair nome_produto | "
+            "resposta=%s",
+            request_id,
+            resposta,
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail="O serviço de IA retornou dados em formato inválido.",
+        )
+
+    if not dados["preco_atual"]:
+        logger.error(
+            "request_id=%s | "
+            "não foi possível extrair preco_atual | "
+            "resposta=%s",
+            request_id,
+            resposta,
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail="O serviço de IA não retornou o preço atual.",
+        )
+
+    return dados
+
+
+# ============================================================
 # 9ROUTER
 # ============================================================
 
@@ -437,24 +551,29 @@ async def chamar_9router(
             detail="Serviço de IA não configurado.",
         )
 
+    # ========================================================
+    # PROMPT OTIMIZADO
+    # ========================================================
+
     prompt_sistema = (
-        "Extraia dados da oferta e responda SOMENTE com JSON válido.\n"
-        "\n"
-        "Formato obrigatório:\n"
-        "{"
-        '"nome_produto":"string",'
-        '"preco_anterior":"string ou null",'
-        '"preco_atual":"string",'
-        '"cupom":"string ou null",'
-        '"link_cupom":"string ou null",'
-        '"link_produto":"string ou null"'
-        "}\n"
+        "Extraia os dados da oferta.\n"
+        "Responda SOMENTE nesta linha, sem explicações:\n"
+        "nome_produto: X, preco_anterior: X, preco_atual: X, "
+        "cupom: X, link_cupom: X, link_produto: X\n"
         "\n"
         "Regras:\n"
         "- nome_produto: nome comercial completo do produto.\n"
-        "- cupom: somente se houver código escrito no texto. Nunca invente.\n"
-        "- Se um dado não existir, use null.\n"
-        "- Não escreva explicações."
+        "- preco_anterior: preço antigo ou null.\n"
+        "- preco_atual: preço atual.\n"
+        "- cupom: somente o código escrito no texto ou null.\n"
+        "- link_cupom: somente se houver link específico para cupom ou null.\n"
+        "- link_produto: link do produto ou null.\n"
+        "- Não invente informações.\n"
+        "- Se não existir, use null.\n"
+        "- Não use JSON.\n"
+        "- Não use markdown.\n"
+        "- Não explique nada.\n"
+        "- Responda somente a linha solicitada."
     )
 
     payload_dados = {
@@ -554,7 +673,10 @@ async def chamar_9router(
         # RESPOSTA DA IA
         # ====================================================
 
-        choices = dados.get("choices", [])
+        choices = dados.get(
+            "choices",
+            [],
+        )
 
         if not choices:
             logger.error(
@@ -565,12 +687,14 @@ async def chamar_9router(
 
             raise HTTPException(
                 status_code=502,
-                detail="O serviço de IA não retornou uma resposta válida."
+                detail="O serviço de IA não retornou uma resposta válida.",
             )
 
         choice = choices[0]
 
-        finish_reason = choice.get("finish_reason")
+        finish_reason = choice.get(
+            "finish_reason"
+        )
 
         resposta_ia = (
             choice
@@ -581,7 +705,9 @@ async def chamar_9router(
         if resposta_ia is None:
             resposta_ia = ""
 
-        resposta_ia = str(resposta_ia).strip()
+        resposta_ia = str(
+            resposta_ia
+        ).strip()
 
         logger.info(
             "request_id=%s | "
@@ -592,9 +718,29 @@ async def chamar_9router(
             len(resposta_ia),
         )
 
+        # ====================================================
+        # DETECTA TRUNCAMENTO
+        # ====================================================
+
+        if finish_reason == "length":
+            logger.error(
+                "request_id=%s | "
+                "resposta truncada pelo limite de tokens | "
+                "completion_chars=%d",
+                request_id,
+                len(resposta_ia),
+            )
+
+            raise HTTPException(
+                status_code=502,
+                detail="A IA interrompeu a resposta por limite de tokens.",
+            )
+
         if not resposta_ia:
             logger.error(
-                "request_id=%s | 9router retornou resposta vazia | response=%s",
+                "request_id=%s | "
+                "9router retornou resposta vazia | "
+                "response=%s",
                 request_id,
                 dados,
             )
@@ -604,39 +750,21 @@ async def chamar_9router(
                 detail="O serviço de IA não retornou dados.",
             )
 
-        resposta_limpa = re.sub(
-            r"```json\s*|```",
-            "",
+        # ====================================================
+        # PARSE DO FORMATO TEXTUAL
+        # ====================================================
+
+        dados_extraidos = parsear_resposta_ia(
             resposta_ia,
-        ).strip()
-
-        # ====================================================
-        # PARSE DO JSON
-        # ====================================================
-
-        try:
-            json_puro = json.loads(
-                resposta_limpa
-            )
-
-        except json.JSONDecodeError:
-            logger.error(
-                "request_id=%s | JSON inválido retornado pelo 9router | resposta=%s",
-                request_id,
-                resposta_limpa,
-            )
-
-            raise HTTPException(
-                status_code=502,
-                detail="O serviço de IA retornou dados inválidos.",
-            )
+            request_id,
+        )
 
         # ====================================================
         # CORREÇÕES DETERMINÍSTICAS
         # ====================================================
 
-        json_corrigido = organizar_links_e_precos(
-            json_puro,
+        dados_corrigidos = organizar_links_e_precos(
+            dados_extraidos,
             texto,
         )
 
@@ -646,14 +774,16 @@ async def chamar_9router(
 
         try:
             oferta_validada = OfertaEstruturada(
-                **json_corrigido
+                **dados_corrigidos
             )
 
         except Exception:
             logger.error(
-                "request_id=%s | resposta não passou na validação | dados=%s",
+                "request_id=%s | "
+                "resposta não passou na validação | "
+                "dados=%s",
                 request_id,
-                json_corrigido,
+                dados_corrigidos,
             )
 
             raise HTTPException(
@@ -932,3 +1062,4 @@ async def extrair_oferta(
             status_code=500,
             detail="Erro interno ao processar a oferta.",
         )
+````
