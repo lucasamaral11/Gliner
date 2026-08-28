@@ -17,35 +17,33 @@ from pydantic import BaseModel, Field
 # ============================================================
 
 NINE_ROUTER_BASE_URL = os.getenv(
-    "NINE_ROUTER_BASE_URL",
-    "https://1u1esdryigb7s9fcyaduiw1q.187.127.36.194.sslip.io/v1",
+    "NINE_ROUTER_BASE_URL"
 ).rstrip("/")
 
 NINE_ROUTER_API_KEY = os.getenv("NINE_ROUTER_API_KEY")
 
 MODEL_NAME = os.getenv(
-    "NINE_ROUTER_MODEL",
-    "teste",
+    "NINE_ROUTER_MODEL"
 )
 
 AI_CONNECT_TIMEOUT = float(
-    os.getenv("AI_CONNECT_TIMEOUT", "10")
+    os.getenv("AI_CONNECT_TIMEOUT")
 )
 
 AI_READ_TIMEOUT = float(
-    os.getenv("AI_READ_TIMEOUT", "120")
+    os.getenv("AI_READ_TIMEOUT")
 )
 
 AI_WRITE_TIMEOUT = float(
-    os.getenv("AI_WRITE_TIMEOUT", "10")
+    os.getenv("AI_WRITE_TIMEOUT")
 )
 
 AI_POOL_TIMEOUT = float(
-    os.getenv("AI_POOL_TIMEOUT", "10")
+    os.getenv("AI_POOL_TIMEOUT")
 )
 
 MAX_TEXT_LENGTH = int(
-    os.getenv("MAX_TEXT_LENGTH", "20000")
+    os.getenv("MAX_TEXT_LENGTH")
 )
 
 LOG_LEVEL = os.getenv(
