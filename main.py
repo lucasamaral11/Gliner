@@ -878,8 +878,9 @@ A resposta deve ser um ÚNICO objeto JSON válido.
         ],
         "temperature": 0.0,
         "top_p": 0.1,
-        "max_tokens": 700,
+        "max_tokens": 7000,
         "stream": False,
+        "enable_thinking": False,
     }
 
     headers = {
